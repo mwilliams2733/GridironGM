@@ -1,7 +1,10 @@
-"""nflverse ingest via nfl_data_py: weekly stats, snaps, schedules, rosters, injuries.
+"""nflverse ingest via nflreadpy: weekly stats, snaps, schedules, rosters, injuries.
 
-Raw pulls are cached to parquet (data/cache/) so re-syncs and offline work are cheap;
-normalized frames land in SQLite.
+nflreadpy (the maintained successor to nfl_data_py) returns Polars frames and
+handles nflverse's current release URLs. Raw pulls are cached to parquet
+(data/cache/) so re-syncs and offline work are cheap; normalized frames land in
+SQLite. Seasons that don't exist yet (e.g. the upcoming season before week 1)
+are skipped, not fatal.
 """
 from __future__ import annotations
 
@@ -9,72 +12,104 @@ import logging
 
 import pandas as pd
 
-from ..config import PARQUET_DIR, current_season, ensure_dirs, history_seasons
-from ..db import connect, init_db, mark_synced, replace_table, upsert_rows
+from ..config import PARQUET_DIR, current_season, ensure_dirs, history_seasons, league_config
+from ..db import connect, init_db, mark_synced, replace_table
 
 log = logging.getLogger(__name__)
 
-WEEKLY_COLS = [
-    "season", "week", "player_id", "recent_team", "opponent_team", "position",
-    "completions", "attempts", "passing_yards", "passing_tds", "interceptions",
-    "sacks", "carries", "rushing_yards", "rushing_tds",
-    "receptions", "targets", "receiving_yards", "receiving_tds",
-    "target_share", "air_yards_share",
-    "rushing_fumbles_lost", "receiving_fumbles_lost", "sack_fumbles_lost",
-    "passing_2pt_conversions", "rushing_2pt_conversions", "receiving_2pt_conversions",
-    "special_teams_tds", "fantasy_points_ppr", "fantasy_points",
-]
+
+def _seasons() -> list[int]:
+    return sorted(history_seasons() + [current_season()])
 
 
 def _cached_pull(name: str, fetch) -> pd.DataFrame:
-    """Fetch via nfl_data_py, caching to parquet; fall back to cache offline."""
+    """Fetch via nflreadpy (per call), cache to parquet; fall back to cache offline."""
     ensure_dirs()
     path = PARQUET_DIR / f"{name}.parquet"
     try:
         df = fetch()
+        if hasattr(df, "to_pandas"):  # polars -> pandas
+            df = df.to_pandas()
         df.to_parquet(path, index=False)
         return df
-    except Exception as exc:  # network down / source unavailable
+    except Exception as exc:
         if path.exists():
             log.warning("fetch %s failed (%s); using cached parquet", name, exc)
             return pd.read_parquet(path)
         raise
 
 
-def sync_weekly_stats(seasons: list[int] | None = None) -> int:
-    import nfl_data_py as nfl
+def _pull_seasons(name: str, loader, seasons: list[int]) -> pd.DataFrame:
+    """Pull per season so a not-yet-published season 404 doesn't sink the batch."""
+    frames = []
+    for yr in seasons:
+        try:
+            frames.append(_cached_pull(f"{name}_{yr}", lambda y=yr: loader(y)))
+        except Exception as exc:
+            log.warning("season %s unavailable for %s (%s); skipping", yr, name, exc)
+    if not frames:
+        raise RuntimeError(f"no seasons available for {name}")
+    return pd.concat(frames, ignore_index=True)
 
-    seasons = seasons or (history_seasons() + [current_season()])
-    df = _cached_pull("weekly", lambda: nfl.import_weekly_data(seasons))
-    keep = [c for c in WEEKLY_COLS if c in df.columns]
-    out = df[keep].rename(columns={"recent_team": "team", "opponent_team": "opponent"})
+
+_RENAMES = {  # tolerate schema drift between nflverse releases
+    "recent_team": "team",
+    "team_abbr": "team",
+    "opponent": "opponent",
+    "opponent_team": "opponent",
+}
+
+
+def sync_weekly_stats() -> int:
+    import nflreadpy as nfl
+
+    df = _pull_seasons("weekly", lambda y: nfl.load_player_stats(y, summary_level="week"), _seasons())
+    df = df.rename(columns={k: v for k, v in _RENAMES.items() if k in df.columns and v not in df.columns})
+    keep = [
+        "season", "week", "player_id", "team", "opponent", "position",
+        "completions", "attempts", "passing_yards", "passing_tds", "interceptions",
+        "sacks_suffered", "carries", "rushing_yards", "rushing_tds",
+        "receptions", "targets", "receiving_yards", "receiving_tds",
+        "target_share", "air_yards_share",
+        "rushing_fumbles_lost", "receiving_fumbles_lost", "sack_fumbles_lost",
+        "passing_2pt_conversions", "rushing_2pt_conversions", "receiving_2pt_conversions",
+        "special_teams_tds",
+    ]
+    out = df[[c for c in keep if c in df.columns]].copy()
+    if "sacks_suffered" in out.columns:
+        out = out.rename(columns={"sacks_suffered": "sacks"})
     # league points = nflverse standard points + configured per-reception value
     # (nflverse standard already matches ESPN base: pass TD 4, INT -2, fumble -2)
-    from ..config import league_config
     rec_val = league_config()["scoring"]["receiving"]["reception"]
-    out["fantasy_points_half_ppr"] = df["fantasy_points"] + df["receptions"].fillna(0) * rec_val
-    out = out.drop(columns=[c for c in ("fantasy_points_ppr", "fantasy_points") if c in out.columns])
+    out["fantasy_points_half_ppr"] = (
+        df["fantasy_points"].fillna(0) + df["receptions"].fillna(0) * rec_val
+    )
     out = out[out["position"].isin(["QB", "RB", "WR", "TE"])]
     with connect() as conn:
         n = replace_table(out, "weekly_stats", conn)
-    mark_synced("weekly_stats", f"{n} rows, seasons={seasons}")
+    mark_synced("weekly_stats", f"{n} rows, seasons={_seasons()}")
     return n
 
 
-def sync_players(seasons: list[int] | None = None) -> int:
-    import nfl_data_py as nfl
+def sync_players() -> int:
+    import nflreadpy as nfl
 
-    seasons = seasons or (history_seasons() + [current_season()])
-    df = _cached_pull("rosters", lambda: nfl.import_seasonal_rosters(seasons))
-    latest = df.sort_values("season").drop_duplicates("player_id", keep="last")
+    df = _cached_pull("players", lambda: nfl.load_players())
+    ids = _cached_pull("ff_ids", lambda: nfl.load_ff_playerids())
+    espn_map = (
+        ids.dropna(subset=["gsis_id", "espn_id"])
+        .drop_duplicates("gsis_id")
+        .set_index("gsis_id")["espn_id"]
+    )
     out = pd.DataFrame({
-        "player_id": latest["player_id"],
-        "name": latest["player_name"],
-        "position": latest["position"],
-        "team": latest["team"],
-        "birthdate": latest.get("birth_date", pd.Series(dtype=str)).astype(str),
-        "status": latest.get("status", pd.Series(dtype=str)),
-    })
+        "player_id": df["gsis_id"],
+        "name": df["display_name"],
+        "position": df["position"],
+        "team": df.get("latest_team", df.get("team_abbr")),
+        "birthdate": df.get("birth_date", pd.Series(dtype=str)).astype(str),
+        "status": df.get("status", pd.Series(dtype=str)),
+    }).dropna(subset=["player_id"])
+    out["espn_id"] = out["player_id"].map(espn_map)
     out = out[out["position"].isin(["QB", "RB", "WR", "TE", "K"])]
     with connect() as conn:
         n = replace_table(out, "players", conn)
@@ -82,35 +117,32 @@ def sync_players(seasons: list[int] | None = None) -> int:
     return n
 
 
-def sync_snap_counts(seasons: list[int] | None = None) -> int:
-    import nfl_data_py as nfl
+def sync_snap_counts() -> int:
+    import nflreadpy as nfl
 
-    seasons = seasons or (history_seasons() + [current_season()])
-    df = _cached_pull("snaps", lambda: nfl.import_snap_counts(seasons))
+    df = _pull_seasons("snaps", lambda y: nfl.load_snap_counts(y), _seasons())
+    ids = _cached_pull("ff_ids", lambda: nfl.load_ff_playerids())
+    pfr_map = (
+        ids.dropna(subset=["pfr_id", "gsis_id"])
+        .drop_duplicates("pfr_id")
+        .set_index("pfr_id")["gsis_id"]
+    )
     out = pd.DataFrame({
         "season": df["season"], "week": df["week"],
-        "player_id": df["pfr_player_id"],
+        "player_id": df["pfr_player_id"].map(pfr_map),
         "offense_snaps": df["offense_snaps"], "offense_pct": df["offense_pct"],
-    })
-    # map pfr ids -> gsis ids where possible
-    try:
-        ids = _cached_pull("ids", lambda: nfl.import_ids())
-        id_map = ids.dropna(subset=["pfr_id", "gsis_id"]).set_index("pfr_id")["gsis_id"]
-        out["player_id"] = out["player_id"].map(id_map).fillna(out["player_id"])
-    except Exception as exc:
-        log.warning("id map unavailable (%s); keeping pfr ids", exc)
-    out = out.dropna(subset=["player_id"]).drop_duplicates(["season", "week", "player_id"])
+    }).dropna(subset=["player_id"]).drop_duplicates(["season", "week", "player_id"])
     with connect() as conn:
         n = replace_table(out, "snap_counts", conn)
     mark_synced("snap_counts", f"{n} rows")
     return n
 
 
-def sync_schedules(seasons: list[int] | None = None) -> int:
-    import nfl_data_py as nfl
+def sync_schedules() -> int:
+    import nflreadpy as nfl
 
-    seasons = seasons or (history_seasons() + [current_season()])
-    df = _cached_pull("schedules", lambda: nfl.import_schedules(seasons))
+    df = _cached_pull("schedules", lambda: nfl.load_schedules(_seasons()))
+    df = df[df["season"].isin(_seasons())]
     out = pd.DataFrame({
         "season": df["season"], "week": df["week"], "game_id": df["game_id"],
         "home_team": df["home_team"], "away_team": df["away_team"],
@@ -122,12 +154,11 @@ def sync_schedules(seasons: list[int] | None = None) -> int:
     return n
 
 
-def sync_injuries(seasons: list[int] | None = None) -> int:
-    import nfl_data_py as nfl
+def sync_injuries() -> int:
+    import nflreadpy as nfl
 
-    seasons = seasons or [current_season()]
     try:
-        df = _cached_pull("injuries", lambda: nfl.import_injuries(seasons))
+        df = _pull_seasons("injuries", lambda y: nfl.load_injuries(y), _seasons())
     except Exception as exc:
         log.warning("injuries unavailable (%s); skipping", exc)
         return 0

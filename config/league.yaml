@@ -5,7 +5,7 @@ league:
   name: "My ESPN League"
   platform: espn
   teams: 12
-  season: 2025          # most recent completed/active season to operate on
+  season: 2026          # season being played/drafted for
   history_seasons: 3    # completed seasons of history to ingest for projections
 
 scoring:
@@ -77,4 +77,4 @@ espn:
   # Non-secret league identifiers may live here; espn_s2/SWID stay in
   # C:\Users\mwill\.secrets\shared.env or config/espn.local.yaml (gitignored).
   league_id: null
-  year: 2025
+  year: 2026

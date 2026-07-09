@@ -15,6 +15,8 @@ from ..config import get_secret
 from ..db import connect, mark_synced, upsert_rows
 
 log = logging.getLogger(__name__)
+# httpx INFO logs full request URLs, which would leak the apiKey query param
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 BASE = "https://api.the-odds-api.com/v4"
 SPORT = "americanfootball_nfl"

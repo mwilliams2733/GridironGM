@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS players (
     position TEXT,
     team TEXT,
     birthdate TEXT,
-    status TEXT
+    status TEXT,
+    espn_id TEXT
 );
 CREATE TABLE IF NOT EXISTS weekly_stats (
     season INTEGER, week INTEGER, player_id TEXT,
