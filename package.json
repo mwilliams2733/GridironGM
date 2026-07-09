@@ -1,0 +1,17 @@
+{
+  "name": "gridiron-gm",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Fantasy football decision support: draft, waivers, start/sit",
+  "scripts": {
+    "setup": "npm --prefix web install && python -m venv .venv && .venv\\Scripts\\pip install -r api/requirements.txt",
+    "dev": "concurrently -n api,web -c blue,green \"npm run dev:api\" \"npm run dev:web\"",
+    "dev:api": ".venv\\Scripts\\python -m uvicorn app.main:app --app-dir api --port 8000 --reload",
+    "dev:web": "npm --prefix web run dev",
+    "sync": "cd api && ..\\.venv\\Scripts\\python -m app.etl.sync all",
+    "test": "cd api && ..\\.venv\\Scripts\\python -m pytest tests -q"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  }
+}

@@ -1,0 +1,80 @@
+# GridironGM league configuration — single source of truth.
+# Nothing in application logic may hard-code these values.
+
+league:
+  name: "My ESPN League"
+  platform: espn
+  teams: 12
+  season: 2025          # most recent completed/active season to operate on
+  history_seasons: 3    # completed seasons of history to ingest for projections
+
+scoring:
+  # Half-PPR (ESPN default base scoring otherwise)
+  passing:
+    yards_per_point: 25        # 0.04 / yd
+    touchdown: 4
+    interception: -2
+    two_point: 2
+  rushing:
+    yards_per_point: 10        # 0.1 / yd
+    touchdown: 6
+    two_point: 2
+  receiving:
+    reception: 0.5             # HALF-PPR
+    yards_per_point: 10
+    touchdown: 6
+    two_point: 2
+  misc:
+    fumble_lost: -2
+    return_touchdown: 6
+  kicking:
+    fg_0_39: 3
+    fg_40_49: 4
+    fg_50_plus: 5
+    fg_missed: -1
+    xp_made: 1
+    xp_missed: -1
+  dst:
+    sack: 1
+    interception: 2
+    fumble_recovery: 2
+    touchdown: 6
+    safety: 2
+    block_kick: 2
+    points_allowed_tiers:      # [max_points_allowed, fantasy_points]
+      - [0, 5]
+      - [6, 4]
+      - [13, 3]
+      - [17, 1]
+      - [27, 0]
+      - [34, -1]
+      - [45, -3]
+      - [999, -5]
+
+roster:
+  starters:
+    QB: 1
+    RB: 2
+    WR: 2
+    TE: 1
+    FLEX: 1                    # RB/WR/TE
+    K: 1
+    DST: 1
+  flex_eligible: [RB, WR, TE]
+  bench: 7                     # ESPN default
+  ir: 1
+
+draft:
+  type: snake                  # snake | auction | linear
+  rounds: 16                   # starters + bench (+ typical)
+  my_slot: null                # set during draft setup; null = ask
+
+waivers:
+  system: faab                 # faab | priority
+  faab_budget: 100
+
+espn:
+  # Non-secret league identifiers may live here; espn_s2/SWID stay in
+  # C:\Users\mwill\.secrets\shared.env or config/espn.local.yaml (gitignored).
+  league_id: null
+  year: 2025

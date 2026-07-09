@@ -1,0 +1,29 @@
+# Secrets — never commit
+.secrets/
+*.env
+.env*
+!.env.example
+config/espn.local.yaml
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+web/dist/
+
+# Local data cache (rebuildable via sync)
+data/*.db
+data/*.duckdb
+data/*.parquet
+data/cache/
+data/espn_cache/
+
+# OS / editor
+.DS_Store
+Thumbs.db
