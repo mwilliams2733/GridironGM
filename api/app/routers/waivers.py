@@ -1,0 +1,77 @@
+"""Waiver-wire rankings: ESPN free-agent cache, or top undrafted-by-ADP fallback."""
+from __future__ import annotations
+
+import logging
+
+from fastapi import APIRouter
+
+from ..config import current_season, league_config
+from ..etl import espn as espn_etl
+from ..models import projections as proj
+from ..models import vorp
+from ..models import waivers as waivers_model
+from ._common import all_players, records, resolve_espn_player
+
+log = logging.getLogger(__name__)
+router = APIRouter(prefix="/waivers", tags=["waivers"])
+
+
+def _my_roster_ids() -> list[str]:
+    try:
+        result = espn_etl.get_my_roster()
+    except Exception:
+        return []
+    roster = (result.get("team") or {}).get("roster") or []
+    if not roster:
+        return []
+    players = all_players()
+    ids = []
+    for p in roster:
+        pid = resolve_espn_player(p.get("espn_id"), p.get("name", ""), p.get("position"), players)
+        if pid:
+            ids.append(pid)
+    return ids
+
+
+def _free_agent_ids(my_roster: list[str], season: int) -> tuple[list[str], str | None]:
+    cache = espn_etl.read_cache("free_agents")
+    if cache and cache.get("data"):
+        players = all_players()
+        ids = []
+        for p in cache["data"]:
+            pid = resolve_espn_player(p.get("espn_id"), p.get("name", ""), p.get("position"), players)
+            if pid and pid not in my_roster:
+                ids.append(pid)
+        if ids:
+            return ids, None
+
+    # fallback: top undrafted-by-ADP players not on my roster
+    season_proj = proj.project_season(season)
+    if season_proj.empty:
+        return [], "no projections available"
+    adp = vorp.resolve_adp(season)
+    adp_ids = adp.dropna(subset=["player_id"]).sort_values("adp")["player_id"].tolist()
+    ids = [pid for pid in adp_ids if pid not in my_roster][:150]
+    if not ids:
+        ids = [pid for pid in season_proj.player_id.tolist() if pid not in my_roster][:150]
+    return ids, "ESPN free-agent cache unavailable — using ADP fallback"
+
+
+@router.get("/rankings")
+def get_rankings(week: int = 1) -> dict:
+    season = current_season()
+    my_roster = _my_roster_ids()
+    fa_ids, warning = _free_agent_ids(my_roster, season)
+    if not fa_ids:
+        return {"rankings": [], "warning": warning or "no free agents available"}
+
+    try:
+        df = waivers_model.rank_free_agents(fa_ids, my_roster, season, week)
+    except Exception as exc:
+        log.warning("rank_free_agents failed: %s", exc)
+        return {"rankings": [], "warning": str(exc)}
+
+    out = {"rankings": records(df)}
+    if warning:
+        out["warning"] = warning
+    return out
