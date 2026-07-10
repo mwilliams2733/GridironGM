@@ -1,0 +1,121 @@
+@import "tailwindcss";
+@plugin "tailwindcss-animate";
+
+@import "@fontsource/oswald/latin-500.css";
+@import "@fontsource/oswald/latin-600.css";
+@import "@fontsource/oswald/latin-700.css";
+@import "@fontsource/inter/latin-400.css";
+@import "@fontsource/inter/latin-500.css";
+@import "@fontsource/inter/latin-600.css";
+@import "@fontsource/jetbrains-mono/latin-400.css";
+@import "@fontsource/jetbrains-mono/latin-500.css";
+
+/* ---------------------------------------------------------------------
+   GridironGM design tokens — "broadcast bug" system.
+   Near-black field surfaces, one hash-mark green accent, amber for money
+   / attention states, crimson reserved for OUT / critical only.
+   ------------------------------------------------------------------- */
+@theme {
+  --font-display: "Oswald", "Arial Narrow", sans-serif;
+  --font-body: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
+
+  --color-field-950: #08090b;
+  --color-field-900: #0d0f12;
+  --color-field-850: #121519;
+  --color-field-800: #171b20;
+  --color-field-700: #20252c;
+  --color-field-600: #2b323b;
+  --color-field-500: #3a4450;
+  --color-field-400: #596674;
+  --color-field-300: #8894a3;
+  --color-field-200: #b7c0ca;
+  --color-field-100: #dde2e7;
+  --color-field-50: #f3f5f7;
+
+  --color-hash-500: #c8ff3d;
+  --color-hash-600: #a3e01f;
+  --color-hash-700: #7fb814;
+
+  --color-amber-500: #ffb020;
+  --color-amber-600: #e0940c;
+
+  --color-crimson-500: #ff4d5e;
+  --color-crimson-600: #e0293c;
+
+  --color-sky-500: #3dd6ff;
+
+  --color-tier-1: #c8ff3d;
+  --color-tier-2: #8fe23f;
+  --color-tier-3: #ffd23d;
+  --color-tier-4: #ff9f3d;
+  --color-tier-5: #ff6b6b;
+  --color-tier-6: #8894a3;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-field-950);
+  color: var(--color-field-100);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+  background-image:
+    radial-gradient(ellipse 80% 50% at 50% -10%, rgba(200, 255, 61, 0.06), transparent),
+    repeating-linear-gradient(
+      0deg,
+      rgba(255, 255, 255, 0.012) 0px,
+      rgba(255, 255, 255, 0.012) 1px,
+      transparent 1px,
+      transparent 48px
+    );
+}
+
+::selection {
+  background: var(--color-hash-600);
+  color: var(--color-field-950);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-field-900);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-field-600);
+  border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-field-500);
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-hash-500);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
