@@ -50,8 +50,11 @@ def test_lineup_optimal_shape_and_no_500():
     assert isinstance(body["bench"], list)
 
 
-def test_lineup_optimal_no_roster_returns_empty_not_500():
-    # 2026 pre-draft: no ESPN/manual roster -> 200 with empty lists, never 500.
+def test_lineup_optimal_no_roster_returns_empty_not_500(monkeypatch):
+    # No ESPN/manual roster configured -> 200 with empty lists, never 500.
+    # Patched rather than relying on data/espn_cache being empty, since a real
+    # manual roster may be configured locally.
+    monkeypatch.setattr("app.routers.lineup._roster_ids", lambda: [])
     r = client.get("/api/lineup/optimal")
     assert r.status_code == 200
     body = r.json()
