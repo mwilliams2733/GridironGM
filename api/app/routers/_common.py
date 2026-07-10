@@ -36,8 +36,30 @@ def all_players() -> pd.DataFrame:
     return p
 
 
+def _dst_lookup() -> dict[str, str]:
+    """'kansas city chiefs' / 'chiefs' / 'kc' -> 'DST_KC' (models use synthetic DST ids)."""
+    from ..etl.odds import TEAM_ABBR
+
+    lut: dict[str, str] = {}
+    for full, abbr in TEAM_ABBR.items():
+        dst = f"DST_{abbr}"
+        lut[norm_name(full)] = dst
+        lut[norm_name(full.split()[-1])] = dst  # nickname ("chiefs")
+        lut[abbr.lower()] = dst
+    return lut
+
+
+def resolve_dst(name: str) -> str | None:
+    key = norm_name(re.sub(r"\b(d/?st|defense|def)\b", "", name, flags=re.I))
+    return _dst_lookup().get(key.strip())
+
+
 def resolve_player_name(name: str, position: str | None, players: pd.DataFrame) -> str | None:
     """Best-effort resolve a free-text name (+optional position) to a player_id."""
+    if position == "DST" or re.search(r"\b(d/?st|defense)\b", str(name), flags=re.I):
+        dst = resolve_dst(name)
+        if dst:
+            return dst
     key = norm_name(name)
     cand = players[players.norm == key]
     if position:

@@ -32,10 +32,11 @@ npm run sync         # first data sync (nflverse stats, odds, ADP, ESPN if confi
 ## Run
 
 ```powershell
-npm run dev          # boots FastAPI (:8000) + Vite web app (:5173) together
+npm run dev          # boots FastAPI (:8100) + Vite web app (:5173+) together
 ```
 
-Open http://localhost:5173. API docs at http://localhost:8000/docs.
+Open the URL Vite prints (http://localhost:5173, or the next free port).
+API docs at http://localhost:8100/docs.
 
 ## Refresh data
 

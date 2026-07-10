@@ -14,7 +14,8 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        // API port; keep in sync with dev:api in root package.json
+        target: `http://localhost:${process.env.GRIDIRON_API_PORT ?? 8100}`,
         changeOrigin: true,
       },
     },
