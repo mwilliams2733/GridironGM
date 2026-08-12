@@ -39,8 +39,11 @@ Modules:
   miss. Verified: these were the only two discrepancies across all four tables.
 - **Graceful degradation.** Every matchup adjustment (odds, injuries, DvP) falls back to a
   neutral factor of `1.0` (or is skipped) when data is missing. No function raises on stale or
-  absent odds/injury rows. This is essential because live odds only cover the upcoming slate
-  (75 events, mostly 2026 week 1) and are absent for historical validation weeks.
+  absent odds/injury rows. This matters because odds are absent for historical validation weeks.
+- **Odds coverage is now full-season.** As of the 2026-08-12 sync The Odds API prices the entire
+  season — **272 events, week 1 through the Super Bowl**, all with a spread and a total. Earlier
+  passes were written against a 75-event, weeks-1–6 slate; anything that assumed "odds only exist
+  for the imminent slate" must be re-checked against this. See §2.3 (venue matching) and §10.4.
 
 ---
 
@@ -163,8 +166,25 @@ Starts from a per-game baseline and applies multiplicative matchup adjustments:
 
 ```
 base   = (1 − 0.40) × season_proj_ppg + 0.40 × recent_form   # if recent form available
-proj   = base × dvp × game_env × script × home × injury
+proj   = base × matchup_factor × injury
+       = base × (dvp × game_env × script × home) × injury
 ```
+
+**`_matchup_factor` is the single source of truth for the parenthesised chain.**
+`project_week` applies it to one week; `project_ros` (§3) sums it over the remaining
+schedule. Neither reimplements it, so rest-of-season is the weekly model integrated over the
+schedule rather than a second model that can drift — pinned by
+`test_ros_equals_sum_of_weekly_projections`, which asserts
+`project_ros(w) == Σ project_week(w..18)` across all 825 projected players.
+
+Two factors sit deliberately **outside** the shared chain because neither generalises past a
+single week:
+
+- **recent form** (§2.1) is a choice of *baseline*, not a matchup adjustment, and ROS has no
+  per-week form to blend.
+- **injury** (§2.6) — a `report_status` is only valid for the week it was filed. Applying a
+  "Questionable" to all 12 remaining games would be nonsense, so `project_week` multiplies it in
+  itself and ROS ignores it.
 
 ### 2.1 Baseline & recent form
 
@@ -192,16 +212,32 @@ WR 25.3, TE 10.7 — used implicitly via the ratio.
 ### 2.3 Game environment — Vegas implied team total (`game_env`)
 
 ```
-game_env = clip( 1 + 0.50 × (implied_total / league_avg_implied − 1),  0.85, 1.20 )
+offence:  game_env = clip( 1 + 0.50 × (own_implied      / league_avg_implied − 1),  0.85, 1.20 )
+DST:      game_env = clip( 1 − 0.50 × (opponent_implied / league_avg_implied − 1),  0.85, 1.20 )
 ```
 
 - `IMPLIED_TOTAL_GAIN = 0.50`: roughly half of a player's output is tied to how many points his
   team is expected to score (the rest is share/efficiency), so we pass through half the
   team-total deviation.
+- **DST inverts, and keys off the opponent.** A defense scores *more* when it faces a weak
+  offense, so the sign flips and the input is the opponent's implied total, not its own — the
+  same direction as the season DST model (§4). Through Pass 3 the weekly model applied the
+  offensive form to DSTs, i.e. it rewarded a defense for playing on a high-scoring team, exactly
+  backwards. That was a 1-game error before; once §3 began summing this factor over the whole
+  remaining schedule it would have compounded ~17×, so it is corrected here and pinned by
+  `test_dst_scales_inversely_with_the_opponent_implied_total`. K keeps the offensive form (more
+  scoring drives → more FG/XP attempts), which was already right.
 - `league_avg_implied`: mean implied total across the week's matched odds if present, else
-  `LEAGUE_AVG_IMPLIED = 22.9` (measured mean of both sides across the 2026 odds slate).
+  `LEAGUE_AVG_IMPLIED = 22.9` (measured mean of both sides across the full 2026 odds slate is
+  **22.83**, so the constant is accurate to within noise).
 - Odds are matched to a team **only if** the odds row's opponent equals the scheduled opponent
-  for that week (`_odds_by_team`), guarding against stale odds bleeding into the wrong week.
+  for that week **and the venue agrees** (`_odds_by_team`). Venue is not optional: with the whole
+  season priced, every divisional home-and-home yields two rows with an identical
+  `(team, opponent)` key. Matching on opponent alone let the later row win, so **96 team-weeks
+  silently took the wrong leg** — flipped spread sign and the opponent's implied total. Adding
+  `is_home` makes the key collision-free across all 544 team-game lines (verified: 0 collisions),
+  and `tests/test_projections.py` pins both the synthetic home-and-home case and a whole-slate
+  invariant that no accepted odds row contradicts the schedule's venue.
 
 ### 2.4 Game script — spread (`script`)
 
@@ -238,27 +274,53 @@ Players on a bye or whose team isn't scheduled that week are omitted from the we
 
 ## 3. Rest-of-season — `project_ros(season, week)`
 
-Aggregates weeks `week..18` without fetching per-week odds for the future (odds don't exist for
-future weeks). For each player:
+Walks weeks `week..18` **individually**, applying the full shared matchup chain (§2) to each and
+summing:
 
 ```
-games_left = number of scheduled remaining games for his team (byes excluded automatically)
-sos        = mean over remaining opponents of dvp(opp, pos)      # position strength-of-schedule
-proj_ros   = season_proj_ppg × sos × games_left
+proj_ros = season_proj_ppg × Σ  matchup_factor(week)
+                             w = week..18, weeks the team actually plays
+
+matchup_factor(w) = dvp(opp, pos) × game_env(w) × script(w) × home(w)
 ```
 
-`sos` reuses the same DvP table (§2.2). The floor/ceiling band is the season band scaled by the
-remaining fraction `games_left / 17`. Rationale: for multi-week horizons the dominant knowable
-signals are how many games remain and the aggregate quality of the defenses faced; per-week
-Vegas noise averages out and isn't available for the future anyway.
+`games_left` falls out of the walk — a bye is simply a week the team has no scheduled game.
+
+**Why this changed.** The previous formula was `season_proj_ppg × mean(dvp) × games_left`,
+written when The Odds API only priced the imminent slate, so there was nothing to look up for
+week 12. Books now price all 272 games (§0), so every remaining week has a real spread and
+implied total. The old formula is a strict special case of the new one: with no odds loaded,
+every `game_env` and `script` collapses to 1.0 and the sum reduces to the DvP-only average
+(times a home/away term that now cancels correctly across the schedule instead of being ignored
+entirely). `test_ros_falls_back_to_dvp_only_without_odds` pins that reduction, so the
+odds-free/historical path is unchanged in substance.
+
+**Measured effect** on the 2026 board vs the old formula: mean absolute change **4.4%** (3.4
+pts), max 12%; mean rank movement in the top 60 is **4.7 places**, max 20. Direction is what
+Vegas information should produce — backs on strong favored offenses rise (Gibbs +32, Kyren
+Williams +31, Cook +27, McCaffrey +23), backs on weak ones fall (Achane −36, Hall −24, Judkins
+−23, Jeanty −21). This feeds waiver ranking (§6), where ROS carries `ROS_WEIGHT = 1.0`.
+
+The floor/ceiling band is still the season band scaled by the remaining fraction
+`games_left / 17`. `components` reports `sos` (mean DvP alone, as before), `matchup` (mean of the
+full factor) and `weeks_priced` (how many remaining weeks had odds) so a projection can be
+audited for how much of it is market-driven.
+
+**Cost:** the per-week walk takes `project_ros(2026, 1)` from ~0.2s to **0.90s** for 825 players
+(18 weeks × 825). `project_season` still dominates any request that calls both.
 
 ---
 
 ## 4. Kicker & DST models (§ simplified — no `weekly_stats` for these positions)
 
-Kickers and defenses have **no** rows in `weekly_stats` (positions are QB/RB/WR/TE only), so
-they are modeled from the draft market (ADP) anchored by Vegas implied totals. Both project a
-full 17-game slate. **These are deliberately simple, documented approximations.**
+Kickers and defenses have **no** rows in `weekly_stats` (positions are QB/RB/WR/TE only), so they
+are modeled purely from Vegas implied totals. Both project a full 17-game slate. **These are
+deliberately simple, documented approximations.**
+
+> **ADP is the universe, not an input.** The ADP table only supplies *which* kickers and defenses
+> exist (and their names/teams); `adp` is echoed into `components_json` but never enters the ppg
+> formula. So the K ranking is exactly "whose team has the highest implied total" and carries none
+> of the market's information about kicker quality or volume. See §10.6.
 
 **Kicker** (per-game points scale with the team's own implied total — more scoring drives → more
 FG/XP attempts):
@@ -358,9 +420,18 @@ need = 6.0 × unfilled_starter_slots(pos)  +  1.0 × max(vorp, 0)/10  −  4.0 �
 - `NEED_BYE_PENALTY = 4.0` when the player's bye week coincides with a bye already stacked by an
   existing starter (avoids crippling a single week).
 
-`adp_delta = adp − current_pick_context`; a large positive delta means the player is "falling"
-past his ADP and is a value. The one-line `rationale` string surfaces tier, VORP, ADP/falling,
-bye stacking, and whether the pick fills a starter need.
+`adp_delta = current_pick_context − adp` — **how many picks past his ADP a player is still
+available**. Positive means he has *fallen* (the market says he should already be gone, so he is
+value here); negative means taking him now is a *reach*. The sign is user-facing:
+`web/src/components/TierBadge.tsx` renders `delta > 0` as "▼ falling" and `delta < 0` as
+"▲ reach". (This was inverted through Pass 3 — every player was labelled "falling" at pick 1,
+including a TE with ADP 45. Fixed and pinned by `tests/test_vorp.py`.)
+
+The one-line `rationale` surfaces tier, VORP, ADP with a falling/reach note past ±8 picks, bye
+stacking, and "fills starter need" — which now keys off the position's **unfilled starter slot
+count**, not the composite `need_score`. The old test (`need_score >= NEED_UNFILLED_W`) was
+satisfied by the scarcity term alone for any VORP ≥ 60, so a high-value player at an
+already-filled position falsely claimed to fill a need.
 
 ---
 
@@ -454,11 +525,14 @@ both were projected and played. Note these validation weeks have **no odds** (20
 loaded), so only DvP, recent form, home/away, and injuries are exercised — a realistic
 worst-case for the model:
 
+Re-measured on the 2026-08-12 data refresh (nflverse had revised some 2025 lines; MAE moved by
+≤0.1 anywhere, so the model is stable under the revision):
+
 | Week | N | QB | RB | WR | TE | Overall |
 |------|---|----|----|----|----|---------|
-| 2025 wk 6  | 257 | 5.77 | 4.67 | 4.30 | 3.28 | 4.34 |
-| 2025 wk 10 | 242 | 7.39 | 4.15 | 4.05 | 3.31 | 4.26 |
-| 2025 wk 14 | 252 | 7.46 | 3.72 | 4.03 | 2.75 | 4.03 |
+| 2025 wk 6  | 255 | 5.76 | 4.76 | 4.32 | 3.25 | 4.37 |
+| 2025 wk 10 | 240 | 7.52 | 4.32 | 4.03 | 3.34 | 4.32 |
+| 2025 wk 14 | 246 | 7.42 | 3.81 | 4.05 | 2.80 | 4.09 |
 
 Overall MAE ~4.0–4.3 points is competitive with public weekly projection systems (typical
 skill-position MAE 4–6). QB MAE is higher (~6–7) as expected given QBs' larger scoring range and
@@ -519,7 +593,22 @@ Cook over Jacobs by 0.3).
    per-defense sack/turnover/points-allowed history (a dedicated table would be needed) is the
    biggest accuracy lever for DST.
 3. **FAAB assumes full budget remaining.** Actual remaining budget should come from ESPN sync.
-4. **Odds coverage.** Live odds only cover the imminent slate, so weekly game-environment/script
-   adjustments are neutralized for validation and for future ROS weeks by design.
+4. ~~**ROS leaves full-season odds on the table.**~~ **Done (2026-08-12)** — `project_ros` now
+   sums the shared per-week matchup factor over the remaining schedule (§3). Note this means ROS
+   quality is now tied to odds freshness: re-run `sync odds` before leaning on waiver rankings,
+   since lines move. Historical validation still runs odds-free (2025 odds aren't loaded), so it
+   exercises the fallback path.
 5. **Single-FLEX assumption in the optimizer.** Correct for the loaded config; superflex or
    multi-flex formats would require extending the assignment step (documented in §7).
+6. **K/DST ignore the market and their own history.** §4's models are one-variable; ADP is
+   present but unused, and no defensive box-score table is loaded. Blending the ADP rank as a
+   prior would cost nothing (the data is already synced and 100% resolved).
+7. **Constants are unfitted.** Every weight in §9 was chosen from domain reasoning, not fitted to
+   the 3 seasons in the DB. The validation harness in §8.2 already scores a parameter set against
+   held-out weeks, so a coarse sweep over the highest-leverage few (`WEEK_FORM_BLEND`,
+   `IMPLIED_TOTAL_GAIN`, `DVP_CLIP`, `RECENCY_WEIGHTS`) is mechanical work with a measurable
+   answer. Fit on 2023–24, score on 2025, or the MAE will be optimistic.
+8. **No calibration against the market.** Nothing checks projections against ADP consensus, so an
+   outlier passes silently — the current 2026 board has Bo Nix as QB2 (307.9) ahead of Hurts,
+   Mahomes and Lamar. A "biggest disagreements vs ADP" report would surface these as either the
+   model's edge or its bugs, and is the fastest way to find the next one.

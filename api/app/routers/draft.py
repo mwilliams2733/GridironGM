@@ -220,4 +220,4 @@ def get_my_roster_endpoint() -> dict:
         else:
             slot_suggestions[pos] = max(0, need - filled.get(pos, 0))
 
-    return {"roster": rows, "slot_suggestions": slot_suggestions, "my_slot": state.get("my_slot")}
+    return {"picks": rows, "slot_suggestions": slot_suggestions, "my_slot": state.get("my_slot")}

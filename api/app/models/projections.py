@@ -385,11 +385,15 @@ def _opp_implied_totals(season: int) -> dict[str, float]:
 
 
 def _project_k_dst_season(season: int) -> pd.DataFrame:
-    """K and DST projections anchored on ADP (draft market) and Vegas implied totals.
+    """K and DST projections from Vegas implied totals.
 
     Kickers: ppg scales with the team's own implied total. DST: ppg scales with the
     INVERSE of opponents' implied totals (weaker offenses faced => more DST points).
     Both are simple, documented models because these positions have no weekly_stats.
+
+    NOTE: the ADP table supplies only the *universe* (which kickers/defenses exist and
+    their teams). ``adp`` is echoed into components for display but is NOT an input to
+    the projection -- see docs/MODELING.md 4 and 10.6.
     """
     adp = read_df("SELECT player_name, position, team, adp FROM adp WHERE position IN ('PK','DST')")
     if adp.empty:
@@ -490,7 +494,13 @@ def _recent_form(season: int, week: int) -> pd.Series:
 
 def _odds_by_team(season: int, week: int) -> dict[str, dict]:
     """team -> {spread, implied_total, is_home} from cached odds, matched to this
-    week's schedule by opponent pairing. Empty if odds are stale/missing."""
+    week's schedule by opponent AND venue. Empty if odds are stale/missing.
+
+    Venue matters: books price the whole season, so divisional home-and-homes
+    produce two rows with the same (team, opponent). Matching on opponent alone
+    lets the wrong leg win (spread sign flipped, wrong implied total) for ~96
+    team-weeks. (team, opponent, is_home) is collision-free across the slate.
+    """
     from ..etl.odds import game_lines
     gl = game_lines()
     if gl.empty:
@@ -500,10 +510,64 @@ def _odds_by_team(season: int, week: int) -> dict[str, dict]:
     for _, r in gl.iterrows():
         # only trust an odds row if it matches the scheduled matchup for this team
         sch = sched.get(r.team)
-        if sch and sch[0] == r.opponent:
+        if sch and sch[0] == r.opponent and bool(r.is_home) == sch[1]:
             out[r.team] = {"spread": r.spread, "implied_total": r.implied_total,
                            "is_home": bool(r.is_home)}
     return out
+
+
+def _matchup_factor(pos: str, opp: str, is_home: bool,
+                    team_odds: dict | None, opp_odds: dict | None,
+                    dvp: dict, avg_imp: float) -> tuple[float, dict]:
+    """The multiplicative matchup adjustment for one player in one game.
+
+    Single source of truth for the weekly factor chain: ``project_week`` applies it
+    to one week, ``project_ros`` sums it over the remaining schedule. Keeping both on
+    this function is what makes ROS equal to the sum of the weekly projections
+    (pinned by ``test_ros_equals_sum_of_weekly_projections``) instead of a parallel
+    reimplementation that can drift.
+
+    Deliberately EXCLUDED, because neither generalises past a single week:
+      * recent form  -- a baseline choice, not a matchup factor, and ROS has no
+        per-week form to blend.
+      * injury status -- a report_status is only valid for the week it was filed.
+        Applying a "Questionable" to all 12 remaining games would be nonsense.
+    ``project_week`` applies the injury multiplier itself, on top of this.
+
+    Returns ``(factor, components)``.
+    """
+    dvp_f = dvp.get((opp, pos), 1.0)
+
+    # Game environment. For offence, output scales with your OWN implied total. For a
+    # DST it scales INVERSELY with the opponent's -- weaker offence faced => more
+    # sacks/turnovers/low points-allowed. Same direction as the season DST model (4).
+    game_env = 1.0
+    priced = False
+    if pos == "DST":
+        if opp_odds is not None and avg_imp:
+            game_env = float(np.clip(
+                1 - IMPLIED_TOTAL_GAIN * (opp_odds["implied_total"] / avg_imp - 1),
+                *GAME_ENV_CLIP))
+            priced = True
+    elif team_odds is not None and avg_imp:
+        game_env = float(np.clip(
+            1 + IMPLIED_TOTAL_GAIN * (team_odds["implied_total"] / avg_imp - 1),
+            *GAME_ENV_CLIP))
+        priced = True
+
+    # Game script from the spread (offence only; K/DST have no SCRIPT_COEFF entry).
+    spread = team_odds["spread"] if team_odds is not None else None
+    script = 1.0
+    if spread is not None and pos in SCRIPT_COEFF:
+        script = float(np.clip(1 + SCRIPT_COEFF[pos] * (-spread / 10.0),
+                               1 - SCRIPT_MAX, 1 + SCRIPT_MAX))
+
+    hf = 1 + (HOME_FIELD if is_home else -HOME_FIELD)
+
+    factor = dvp_f * game_env * script * hf
+    return factor, {"dvp": round(dvp_f, 3), "game_env": round(game_env, 3),
+                    "script": round(script, 3), "home": is_home,
+                    "spread": spread, "priced": priced}
 
 
 def project_week(season: int, week: int, store: bool = False,
@@ -538,26 +602,12 @@ def project_week(season: int, week: int, store: bool = False,
         if p.player_id in form.index and form[p.player_id] == form[p.player_id]:
             base = (1 - WEEK_FORM_BLEND) * base_ppg + WEEK_FORM_BLEND * float(form[p.player_id])
 
-        # opponent DvP
-        dvp_f = dvp.get((opp, pos), 1.0)
-        # game environment (implied team total)
-        game_env = 1.0
-        spread = None
-        if team in odds:
-            imp = odds[team]["implied_total"]
-            spread = odds[team]["spread"]
-            game_env = float(np.clip(1 + IMPLIED_TOTAL_GAIN * (imp / avg_imp - 1), *GAME_ENV_CLIP))
-        # game script from spread
-        script = 1.0
-        if spread is not None and pos in SCRIPT_COEFF:
-            script = float(np.clip(1 + SCRIPT_COEFF[pos] * (-spread / 10.0),
-                                   1 - SCRIPT_MAX, 1 + SCRIPT_MAX))
-        # home/away
-        hf = 1 + (HOME_FIELD if is_home else -HOME_FIELD)
-        # injury
+        factor, comp = _matchup_factor(pos, opp, is_home, odds.get(team),
+                                       odds.get(opp), dvp, avg_imp)
+        # injury is weekly-only, so it sits outside the shared matchup factor
         inj_mult = INJURY_MULT.get(injuries.get(p.player_id), 1.0)
 
-        proj = base * dvp_f * game_env * script * hf * inj_mult
+        proj = base * factor * inj_mult
         # weekly dispersion from season pergame_std
         pergame_std = p.components.get("pergame_std", base * 0.5) if isinstance(p.components, dict) else base * 0.5
         floor = max(0.0, proj - PCTL_Z * pergame_std)
@@ -567,10 +617,8 @@ def project_week(season: int, week: int, store: bool = False,
             "team": team, "opponent": opp,
             "proj_points": round(proj, 2),
             "floor": round(floor, 2), "ceiling": round(ceiling, 2),
-            "components": {"base_ppg": round(base, 2), "dvp": round(dvp_f, 3),
-                           "game_env": round(game_env, 3), "script": round(script, 3),
-                           "home": is_home, "injury": injuries.get(p.player_id),
-                           "inj_mult": inj_mult, "spread": spread},
+            "components": {**comp, "base_ppg": round(base, 2),
+                           "injury": injuries.get(p.player_id), "inj_mult": inj_mult},
         })
     df = pd.DataFrame(rows).sort_values("proj_points", ascending=False).reset_index(drop=True)
     if store:
@@ -583,34 +631,64 @@ def project_week(season: int, week: int, store: bool = False,
 # ---------------------------------------------------------------------------
 def project_ros(season: int, week: int, store: bool = False,
                 season_proj: pd.DataFrame | None = None) -> pd.DataFrame:
-    """Remaining-schedule aggregate (weeks ``week``..18). Applies a position-level
-    strength-of-schedule multiplier (average opponent DvP over remaining weeks) to
-    each player's per-game baseline and sums over games actually played (skips byes).
-    Columns: player_id, name, position, team, games_left, proj_points, floor, ceiling,
-    components."""
+    """Remaining-schedule aggregate (weeks ``week``..18).
+
+    Walks each remaining week individually, applying the full shared matchup chain
+    (``_matchup_factor``: opponent DvP, Vegas game environment, game script, home
+    field) and summing. Byes drop out naturally because the team has no scheduled
+    game that week.
+
+        proj_ros = base_ppg * SUM over remaining weeks of matchup_factor(week)
+
+    This replaces the earlier ``base_ppg * mean(dvp) * games_left``, which was a
+    strict special case: with no odds loaded every ``game_env``/``script`` collapses
+    to 1.0 and the sum reduces to the old DvP-only average (times a small home/away
+    term that now cancels correctly across the schedule rather than being ignored).
+    The odds-free path is therefore unchanged in substance, which is why historical
+    validation still holds.
+
+    Columns: player_id, name, position, team, games_left, proj_points, floor,
+    ceiling, components.
+    """
     if season_proj is None:
         season_proj = project_season(season)
     if season_proj.empty:
         return pd.DataFrame()
     dvp = dvp_factors(season, week)
-    byes = _bye_weeks(season)
+    weeks = range(max(week, 1), REG_SEASON_WEEKS + 1)
 
-    # For each team, the list of (week, opponent) for remaining weeks.
-    rem_opps: dict[str, list[str]] = {}
-    for w in range(max(week, 1), REG_SEASON_WEEKS + 1):
-        for team, (opp, _home) in _schedule_opponents(season, w).items():
-            rem_opps.setdefault(team, []).append(opp)
+    # Per-week context, built once. Each week normalises its implied totals against
+    # its OWN slate, exactly as project_week does, so the two stay comparable.
+    wk_ctx: dict[int, tuple[dict, dict, float]] = {}
+    for w in weeks:
+        sched = _schedule_opponents(season, w)
+        odds = _odds_by_team(season, w)
+        avg = (float(np.mean([o["implied_total"] for o in odds.values()]))
+               if odds else LEAGUE_AVG_IMPLIED)
+        wk_ctx[w] = (sched, odds, avg)
 
     rows = []
     for _, p in season_proj.iterrows():
         team, pos = p.team, p.position
         base_ppg = p.get("proj_ppg", p.proj_points / FULL_SLATE)
-        opps = rem_opps.get(team, [])
-        games_left = len(opps)
+
+        factor_sum = dvp_sum = 0.0
+        games_left = weeks_priced = 0
+        for w in weeks:
+            sched, odds, avg = wk_ctx[w]
+            if team not in sched:
+                continue                      # bye, or team not scheduled
+            opp, is_home = sched[team]
+            games_left += 1
+            f, comp = _matchup_factor(pos, opp, is_home, odds.get(team),
+                                      odds.get(opp), dvp, avg)
+            factor_sum += f
+            dvp_sum += comp["dvp"]
+            weeks_priced += int(comp["priced"])
         if games_left == 0:
             continue
-        sos = float(np.mean([dvp.get((o, pos), 1.0) for o in opps])) if opps else 1.0
-        proj = base_ppg * sos * games_left
+
+        proj = base_ppg * factor_sum
         # scale season floor/ceiling band to the remaining fraction
         frac = games_left / FULL_SLATE
         band = (p.ceiling - p.floor) / 2 * frac if p.ceiling > p.floor else proj * 0.15
@@ -619,8 +697,11 @@ def project_ros(season: int, week: int, store: bool = False,
             "games_left": games_left,
             "proj_points": round(proj, 1),
             "floor": round(max(0.0, proj - band), 1), "ceiling": round(proj + band, 1),
-            "components": {"base_ppg": round(base_ppg, 2), "sos": round(sos, 3),
-                           "games_left": games_left},
+            "components": {"base_ppg": round(base_ppg, 2),
+                           "sos": round(dvp_sum / games_left, 3),
+                           "matchup": round(factor_sum / games_left, 3),
+                           "games_left": games_left,
+                           "weeks_priced": weeks_priced},
         })
     df = pd.DataFrame(rows).sort_values("proj_points", ascending=False).reset_index(drop=True)
     if store:

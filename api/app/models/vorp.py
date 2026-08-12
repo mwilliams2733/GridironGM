@@ -222,19 +222,24 @@ def vorp_board(drafted_ids: set[str] | None = None,
 
     board["bye"] = board.team.map(byes).astype("Int64")
     board["adp"] = board.player_id.map(adp_by_id)
-    # adp_delta: positive => falling past ADP (value); relative to current pick context
+    # adp_delta = how many picks past his ADP a player is still available.
+    # Positive => he has FALLEN (market says he should be gone; he is a value here).
+    # Negative => taking him now is a REACH relative to the market.
     ctx = pick_number if pick_number is not None else (len(drafted_ids) + 1)
     board["adp_delta"] = board["adp"].apply(
-        lambda a: round(a - ctx, 1) if a == a else np.nan)
+        lambda a: round(ctx - a, 1) if a == a else np.nan)
+
+    # Unfilled starter slots per position, given what I've already drafted.
+    def _unfilled(pos: str) -> int:
+        need_starters = starters.get(pos, 0) + (starters.get("FLEX", 0)
+                                                if pos in cfg["roster"]["flex_eligible"] else 0)
+        return max(0, need_starters - my_pos_count.get(pos, 0))
+
+    board["unfilled"] = board.position.map(_unfilled)
 
     # need score per player
     def need(r) -> float:
-        pos = r.position
-        filled = my_pos_count.get(pos, 0)
-        need_starters = starters.get(pos, 0) + (starters.get("FLEX", 0)
-                                                if pos in cfg["roster"]["flex_eligible"] else 0)
-        unfilled = max(0, need_starters - filled)
-        score = NEED_UNFILLED_W * unfilled + NEED_SCARCITY_W * max(r.vorp, 0) / 10.0
+        score = NEED_UNFILLED_W * r.unfilled + NEED_SCARCITY_W * max(r.vorp, 0) / 10.0
         # bye stacking penalty
         if not pd.isna(r.bye) and int(r.bye) in my_byes:
             score -= NEED_BYE_PENALTY
@@ -247,11 +252,13 @@ def vorp_board(drafted_ids: set[str] | None = None,
         if r.adp == r.adp:
             if r.adp_delta == r.adp_delta and r.adp_delta > 8:
                 bits.append(f"falling (ADP {r.adp:.0f}, pick {ctx})")
+            elif r.adp_delta == r.adp_delta and r.adp_delta < -8:
+                bits.append(f"reach (ADP {r.adp:.0f}, pick {ctx})")
             else:
                 bits.append(f"ADP {r.adp:.0f}")
         if not pd.isna(r.bye) and int(r.bye) in my_byes:
             bits.append(f"bye {int(r.bye)} stacks")
-        if r.need_score >= NEED_UNFILLED_W:
+        if r.unfilled > 0:
             bits.append("fills starter need")
         return "; ".join(bits)
 
