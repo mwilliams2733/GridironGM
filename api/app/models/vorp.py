@@ -176,16 +176,21 @@ def vorp_board(drafted_ids: set[str] | None = None,
                my_roster: list[str] | None = None,
                season: int | None = None,
                season_proj: pd.DataFrame | None = None,
-               pick_number: int | None = None) -> pd.DataFrame:
+               pick_number: int | None = None,
+               cfg: dict | None = None) -> pd.DataFrame:
     """Draft board of undrafted players ranked by VORP with tiers, ADP context and
     roster-need score for the drafting team.
+
+    Pass `cfg` to build the board for a specific league — replacement level is
+    ``starters × teams``, so a 10-team and a 12-team league rank the same player
+    differently. Defaults to the active league.
 
     Columns: player_id, name, pos, team, proj, vorp, tier, bye, adp, adp_delta,
     need_score, rationale.
     """
     drafted_ids = set(drafted_ids or set())
     my_roster = my_roster or []
-    cfg = league_config()
+    cfg = cfg or league_config()
     season = season or int(cfg["league"]["season"])
     if season_proj is None:
         season_proj = proj.project_season(season)

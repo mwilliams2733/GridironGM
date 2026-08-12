@@ -5,7 +5,7 @@ import logging
 
 from fastapi import APIRouter
 
-from ..config import current_season
+from ..config import current_season, league_config, resolve_league
 from ..etl import espn as espn_etl
 from ..etl.odds import game_lines
 from ..etl.sync import sync_status
@@ -19,17 +19,19 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 
 @router.get("")
-def get_dashboard() -> dict:
+def get_dashboard(league_id: str | None = None) -> dict:
     season = current_season()
+    lid = resolve_league(league_id)
+    cfg = league_config(lid)
 
     try:
-        my_team = league_router.get_roster()
+        my_team = league_router.get_roster(lid)
     except Exception as exc:
         log.warning("dashboard: roster failed: %s", exc)
         my_team = {"mode": "none", "team": {"name": "My Team", "roster": []}, "warning": str(exc)}
 
     try:
-        lineup = lineup_router.get_optimal(season=season, week=None)
+        lineup = lineup_router.get_optimal(season=season, week=None, league_id=lid)
         optimal_lineup = {
             "week": lineup["week"], "season": lineup["season"],
             "optimal_total": lineup["optimal_total"], "current_total": lineup["current_total"],
@@ -42,14 +44,14 @@ def get_dashboard() -> dict:
         optimal_lineup = {"warning": str(exc)}
 
     try:
-        waivers = waivers_router.get_rankings(week=1)
+        waivers = waivers_router.get_rankings(week=1, league_id=lid)
         top_waivers = waivers.get("rankings", [])[:5]
     except Exception as exc:
         log.warning("dashboard: waivers failed: %s", exc)
         top_waivers = []
 
     try:
-        teams_cache = espn_etl.read_cache("teams")
+        teams_cache = espn_etl.read_cache("teams", lid)
         standings = teams_cache.get("data", []) if teams_cache else []
     except Exception as exc:
         log.warning("dashboard: standings failed: %s", exc)
@@ -71,6 +73,8 @@ def get_dashboard() -> dict:
         status = []
 
     return {
+        "league": {"id": cfg["league"]["id"], "name": cfg["league"]["name"],
+                   "teams": cfg["league"]["teams"]},
         "my_team": my_team,
         "optimal_lineup": optimal_lineup,
         "top_waivers": top_waivers,

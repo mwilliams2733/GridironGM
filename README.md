@@ -1,6 +1,6 @@
 # GridironGM
 
-Fantasy football decision support for a 12-team, half-PPR ESPN league:
+Fantasy football decision support across **multiple** half-PPR ESPN leagues:
 **Draft Assistant** · **Waiver Wire Manager** · **Weekly Start/Sit Optimizer** — all
 driven by one projections engine over 3 seasons of nflverse data, Vegas lines from
 The Odds API, and live ESPN league state.
@@ -20,14 +20,51 @@ npm run sync         # first data sync (nflverse stats, odds, ADP, ESPN if confi
 - **The Odds API** — key is read at runtime from the `ODDS_API_KEY` env var, falling
   back to `C:\Users\mwill\.secrets\shared.env` (accepted names: `ODDS_API_KEY`,
   `TheODDSAPI`).
-- **ESPN private league** — add to `shared.env`:
+- **ESPN private leagues** — one cookie pair covers every league on the same ESPN
+  account. Add to `shared.env`:
   ```
-  ESPN_LEAGUE_ID=1234567
   ESPN_S2=...
   SWID={...}
   ```
-  and set `espn.league_id`/`espn.year` in `config/league.yaml` (league id is not secret).
+  Each league's `espn_league_id` (from the ESPN league URL, not a secret) goes in the
+  `leagues:` block of `config/league.yaml`. For a league on a *different* ESPN account,
+  add per-league `espn_s2:`/`swid:` to that entry.
   With no ESPN credentials the app runs in **manual mode**: paste your roster in the UI.
+
+## Multiple leagues
+
+All four leagues share scoring and roster rules; a `leagues:` entry overrides only
+what differs — team count, your draft slot, and the ESPN league id:
+
+```yaml
+leagues:
+  - id: work              # slug; keys stored draft state, don't rename mid-season
+    name: "Work League"
+    teams: 12             # drives VORP replacement level, so it must be right
+    espn_league_id: 123456
+    draft: { my_slot: 4, rounds: 16 }
+active: work              # default for a browser that hasn't picked one
+```
+
+Switch leagues from the dropdown in the header; the selection is per-browser and
+every page follows it. Each league keeps its own draft state
+(`data/drafts/<id>.json`) and ESPN cache (`data/espn_cache/<id>/`).
+
+Team count is not cosmetic: replacement level is `starters × teams`, so a 10-team
+league ranks the same player lower than a 12-team one.
+
+### Drafting
+
+Enter picks in order and each is attributed to the team on the clock automatically
+(snake order, reversing every round). Override the team with the **Log pick to**
+dropdown for trades or out-of-order entry. Every pick is stored, so
+**Rosters by team** shows what every opponent has taken — which is what makes the
+recommendation aware of positional runs and your own remaining needs.
+
+If a league has `espn_league_id` set, **ESPN** in the draft room pulls picks made in
+the ESPN draft room. It's idempotent — re-sync as often as you like; it only appends
+what's new and never overwrites a pick you typed. Verify it against an ESPN **mock
+draft** before relying on it on draft day (see docs/FINDINGS.md).
 
 ## Run
 

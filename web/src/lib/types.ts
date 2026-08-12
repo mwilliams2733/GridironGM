@@ -134,24 +134,102 @@ export type PlayersResponse = (Player & {
 
 // --- draft.py ------------------------------------------------------------
 
+/** Summary of a configured league, from GET /api/leagues. */
+export interface LeagueSummary {
+  id: string;
+  name: string;
+  teams: number;
+  my_slot: number | null;
+  espn_configured: boolean;
+}
+
+export interface LeaguesResponse {
+  active: string;
+  leagues: LeagueSummary[];
+}
+
+/** Identity of the league a response was built for. */
+export interface LeagueRef {
+  id: string;
+  name: string;
+  teams: number;
+}
+
+/** One drafted player, attributed to a team slot. */
+export interface DraftPick {
+  overall: number;
+  round: number;
+  slot: number;
+  player_id: string;
+  name: string;
+  position: string | null;
+  by_me: boolean;
+  source: "manual" | "espn" | string;
+}
+
+/** A team's draft so far, indexed by its slot in the snake order. */
+export interface DraftTeam {
+  slot: number;
+  name: string;
+  is_me: boolean;
+  picks: DraftPick[];
+  position_counts: Record<string, number>;
+}
+
 export interface DraftBoardResponse {
   board: VorpRow[];
   drafted_count: number;
   current_pick: number;
+  current_round: number;
+  /** Draft slot currently on the clock. */
+  on_the_clock: number;
+  my_slot: number | null;
   my_next_pick: number | null;
   runs: Record<string, number>;
   /** position -> tier -> count of undrafted players remaining in that tier. */
   tier_depth: Record<string, Record<string, number>>;
+  teams: DraftTeam[];
+  league: LeagueRef;
   [key: string]: unknown;
 }
 
 export interface DraftPickRequest {
   player_id: string;
-  by_me: boolean;
+  /** Team slot; omit to auto-assign from the snake order. */
+  slot?: number | null;
+  by_me?: boolean;
 }
 
 export interface DraftResetRequest {
   my_slot?: number | null;
+}
+
+/** POST /draft/pick — the stored pick, with the team it was attributed to. */
+export interface DraftPickResponse {
+  picks: number;
+  pick: DraftPick;
+}
+
+/** POST /draft/undo — `undone` is null when there was nothing to undo. */
+export interface DraftUndoResponse {
+  picks: number;
+  undone: DraftPick | null;
+}
+
+/** POST /draft/sync-espn — result of merging ESPN's picks into stored state. */
+export interface DraftEspnSyncResponse {
+  league_id: string;
+  added: number;
+  skipped: number;
+  /** ESPN player ids that could not be matched to a player in our table. */
+  unresolved: (number | string)[];
+  total_picks: number;
+}
+
+/** POST /draft/reset — the fresh state. */
+export interface DraftResetResponse {
+  picks: DraftPick[];
+  my_slot: number | null;
 }
 
 export interface DraftRecommendationResponse {

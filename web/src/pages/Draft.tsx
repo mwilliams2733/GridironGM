@@ -1,8 +1,9 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Redo2, RotateCcw, Search, Undo2, Zap } from "lucide-react";
+import { Download, Redo2, RotateCcw, Search, Undo2, Zap } from "lucide-react";
 import { api } from "@/lib/api";
+import { useLeague, useLeagueKey } from "@/lib/league";
 import type { VorpRow } from "@/lib/types";
 import { PageHeader } from "@/components/Layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -99,15 +100,19 @@ function AlternativeCard({
 
 export function Draft() {
   const queryClient = useQueryClient();
+  const leagueKey = useLeagueKey();
+  const { league } = useLeague();
   const [search, setSearch] = useState("");
   const [position, setPosition] = useState("ALL");
   const [sortKey, setSortKey] = useState<"vorp" | "proj" | "adp" | "tier">("vorp");
   const [slotInput, setSlotInput] = useState("1");
+  // null = follow the snake order. Override only for trades / out-of-order entry.
+  const [assignSlot, setAssignSlot] = useState<number | null>(null);
 
-  const configQuery = useQuery({ queryKey: ["config"], queryFn: api.config });
-  const boardQuery = useQuery({ queryKey: ["draft-board"], queryFn: () => api.draft.board(300) });
-  const recQuery = useQuery({ queryKey: ["draft-rec"], queryFn: api.draft.recommendation });
-  const myRosterQuery = useQuery({ queryKey: ["draft-my-roster"], queryFn: api.draft.myRoster });
+  const configQuery = useQuery({ queryKey: ["config", leagueKey], queryFn: api.config });
+  const boardQuery = useQuery({ queryKey: ["draft-board", leagueKey], queryFn: () => api.draft.board(300) });
+  const recQuery = useQuery({ queryKey: ["draft-rec", leagueKey], queryFn: api.draft.recommendation });
+  const myRosterQuery = useQuery({ queryKey: ["draft-my-roster", leagueKey], queryFn: api.draft.myRoster });
 
   const invalidateAll = () => {
     queryClient.invalidateQueries({ queryKey: ["draft-board"] });
@@ -116,13 +121,44 @@ export function Draft() {
   };
 
   const pickMutation = useMutation({
-    mutationFn: ({ player_id, by_me }: { player_id: string; by_me: boolean }) =>
-      api.draft.pick({ player_id, by_me }),
-    onSuccess: (_data, vars) => {
-      toast.success(vars.by_me ? "Drafted to your team." : "Pick logged.");
+    mutationFn: ({ player_id, slot }: { player_id: string; slot?: number }) =>
+      api.draft.pick({ player_id, slot }),
+    onSuccess: (data) => {
+      const p = data.pick;
+      if (p) {
+        toast.success(
+          p.by_me
+            ? `${p.name} — your pick (${p.overall} overall).`
+            : `${p.name} → Team ${p.slot} (${p.overall} overall).`,
+        );
+      } else {
+        toast.success("Pick logged.");
+      }
       invalidateAll();
     },
     onError: (err: Error) => toast.error(`Pick failed: ${err.message}`),
+  });
+
+  /** Log a pick. Omitting the slot lets the server assign it from the snake order. */
+  const draftPlayer = (player_id: string) =>
+    pickMutation.mutate({ player_id, slot: assignSlot ?? undefined });
+
+  const espnSyncMutation = useMutation({
+    mutationFn: api.draft.syncEspn,
+    onSuccess: (r) => {
+      if (r.added === 0) {
+        toast("ESPN has no new picks.");
+      } else {
+        toast.success(`Pulled ${r.added} pick${r.added === 1 ? "" : "s"} from ESPN.`);
+      }
+      if (r.unresolved.length > 0) {
+        toast.warning(
+          `${r.unresolved.length} ESPN player${r.unresolved.length === 1 ? "" : "s"} couldn't be matched — enter manually.`,
+        );
+      }
+      invalidateAll();
+    },
+    onError: (err: Error) => toast.error(`ESPN sync failed: ${err.message}`),
   });
 
   const undoMutation = useMutation({
@@ -177,6 +213,18 @@ export function Draft() {
     return acc;
   }, {});
 
+  const teams = boardQuery.data?.teams ?? [];
+  const onTheClock = boardQuery.data?.on_the_clock ?? null;
+  const mySlot = boardQuery.data?.my_slot ?? null;
+  const currentRound = boardQuery.data?.current_round ?? null;
+  // Which team the next logged pick lands on: the override if set, else the snake.
+  const effectiveSlot = assignSlot ?? onTheClock;
+  const isMyPick = effectiveSlot != null && effectiveSlot === mySlot;
+  const assignLabel =
+    effectiveSlot == null
+      ? "the next team"
+      : `Team ${effectiveSlot}${effectiveSlot === mySlot ? " (you)" : ""}`;
+
   if (configQuery.isLoading || boardQuery.isLoading) {
     return (
       <div>
@@ -205,11 +253,23 @@ export function Draft() {
         title="Draft Room"
         description={
           boardQuery.data
-            ? `Pick ${boardQuery.data.current_pick} · ${boardQuery.data.drafted_count} drafted · your next pick #${boardQuery.data.my_next_pick ?? "—"}`
+            ? `${boardQuery.data.league.name} · ${boardQuery.data.league.teams} teams · pick ${boardQuery.data.current_pick} (rd ${currentRound}) · ${boardQuery.data.drafted_count} drafted · your next pick #${boardQuery.data.my_next_pick ?? "—"}`
             : undefined
         }
         actions={
           <>
+            {league?.espn_configured && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => espnSyncMutation.mutate()}
+                disabled={espnSyncMutation.isPending}
+                title="Pull picks made in the ESPN draft room"
+              >
+                <Download className={cn("h-3.5 w-3.5", espnSyncMutation.isPending && "animate-pulse")} />
+                {espnSyncMutation.isPending ? "Syncing…" : "ESPN"}
+              </Button>
+            )}
             <Button variant="ghost" size="sm" onClick={() => undoMutation.mutate()} disabled={undoMutation.isPending}>
               <Undo2 className="h-3.5 w-3.5" />
               Undo
@@ -226,6 +286,51 @@ export function Draft() {
           </>
         }
       />
+
+      {!needsSetup && onTheClock != null && (
+        <div
+          className={cn(
+            "mb-6 flex flex-wrap items-center gap-3 rounded-lg border px-4 py-3",
+            isMyPick
+              ? "border-hash-600/50 bg-hash-500/10"
+              : "border-field-700 bg-field-900",
+          )}
+        >
+          <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-field-500">
+            On the clock
+          </span>
+          <span
+            className={cn(
+              "font-display text-lg font-semibold",
+              isMyPick ? "text-hash-500" : "text-field-100",
+            )}
+          >
+            {isMyPick ? "Your pick" : `Team ${onTheClock}`}
+          </span>
+
+          <label className="ml-auto flex items-center gap-2 text-xs text-field-400">
+            Log pick to
+            <select
+              value={assignSlot ?? ""}
+              onChange={(e) => setAssignSlot(e.target.value === "" ? null : Number(e.target.value))}
+              className="h-8 rounded-md border border-field-600 bg-field-900 px-2 font-mono text-xs text-field-100 focus:border-hash-500 focus:outline-none"
+            >
+              <option value="">Auto — Team {onTheClock}</option>
+              {teams.map((t) => (
+                <option key={t.slot} value={t.slot}>
+                  Team {t.slot}
+                  {t.is_me ? " (you)" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+          {assignSlot != null && (
+            <Button variant="ghost" size="sm" onClick={() => setAssignSlot(null)}>
+              Back to auto
+            </Button>
+          )}
+        </div>
+      )}
 
       {needsSetup && (
         <Card className="mb-6 border-hash-600/40">
@@ -272,7 +377,7 @@ export function Draft() {
             <div>
               <RecommendationHero
                 row={recQuery.data.recommended}
-                onDraft={(id) => pickMutation.mutate({ player_id: id, by_me: true })}
+                onDraft={draftPlayer}
                 pending={pickMutation.isPending}
               />
               {recQuery.data.alternatives.length > 0 && (
@@ -281,7 +386,7 @@ export function Draft() {
                     <AlternativeCard
                       key={r.player_id}
                       row={r}
-                      onDraft={(id) => pickMutation.mutate({ player_id: id, by_me: true })}
+                      onDraft={draftPlayer}
                       pending={pickMutation.isPending}
                     />
                   ))}
@@ -365,23 +470,15 @@ export function Draft() {
                         </TableCell>
                         <TableCell className="tabular text-field-400">{r.bye ?? "—"}</TableCell>
                         <TableCell>
-                          <div className="flex gap-1">
-                            <Button
-                              size="sm"
-                              onClick={() => pickMutation.mutate({ player_id: r.player_id, by_me: true })}
-                              disabled={pickMutation.isPending}
-                            >
-                              Me
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="subtle"
-                              onClick={() => pickMutation.mutate({ player_id: r.player_id, by_me: false })}
-                              disabled={pickMutation.isPending}
-                            >
-                              Other
-                            </Button>
-                          </div>
+                          <Button
+                            size="sm"
+                            variant={isMyPick ? "default" : "subtle"}
+                            onClick={() => draftPlayer(r.player_id)}
+                            disabled={pickMutation.isPending}
+                            title={`Assign to ${assignLabel}`}
+                          >
+                            Draft
+                          </Button>
                         </TableCell>
                       </TableRow>
                     ))}
@@ -455,6 +552,61 @@ export function Draft() {
           </Card>
         </div>
       </div>
+
+      {teams.length > 0 && (
+        <Card className="mt-6">
+          <CardHeader>
+            <CardTitle>Rosters by team</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+              {teams.map((t) => (
+                <div
+                  key={t.slot}
+                  className={cn(
+                    "rounded-md border p-3",
+                    t.is_me
+                      ? "border-hash-600/50 bg-hash-500/5"
+                      : t.slot === onTheClock
+                        ? "border-field-500 bg-field-900"
+                        : "border-field-700 bg-field-900",
+                  )}
+                >
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span
+                      className={cn(
+                        "font-display text-xs font-semibold uppercase tracking-wide",
+                        t.is_me ? "text-hash-500" : "text-field-200",
+                      )}
+                    >
+                      {t.name}
+                    </span>
+                    <span className="font-mono text-[10px] text-field-500">
+                      {t.picks.length} pick{t.picks.length === 1 ? "" : "s"}
+                    </span>
+                  </div>
+
+                  {t.picks.length === 0 ? (
+                    <p className="mt-2 text-xs text-field-600">—</p>
+                  ) : (
+                    <ul className="mt-2 flex flex-col gap-1">
+                      {t.picks.map((p) => (
+                        <li key={p.player_id} className="flex items-center gap-1.5">
+                          <span className="w-6 font-mono text-[10px] text-field-600">
+                            {p.overall}
+                          </span>
+                          <PositionBadge position={p.position ?? "?"} />
+                          <span className="truncate text-xs text-field-200">{p.name}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

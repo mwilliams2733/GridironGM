@@ -2,6 +2,7 @@ import { Fragment, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, TrendingUp } from "lucide-react";
 import { api } from "@/lib/api";
+import { useLeagueKey } from "@/lib/league";
 import { PageHeader } from "@/components/Layout";
 import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -13,12 +14,13 @@ import { EmptyState, ErrorState, TableSkeleton } from "@/components/States";
 import { cn } from "@/lib/utils";
 
 export function Waivers() {
+  const leagueKey = useLeagueKey();
   const [week, setWeek] = useState<string>("current");
   const [expanded, setExpanded] = useState<string | null>(null);
 
   const weekParam = week === "current" ? undefined : Number(week);
   const rankingsQuery = useQuery({
-    queryKey: ["waivers", weekParam],
+    queryKey: ["waivers", leagueKey, weekParam],
     queryFn: () => api.waivers.rankings(weekParam),
   });
 

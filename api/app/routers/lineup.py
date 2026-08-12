@@ -31,9 +31,9 @@ def _default_week(season: int) -> int:
     return 1
 
 
-def _roster_ids() -> list[str]:
+def _roster_ids(league_id: str | None = None) -> list[str]:
     try:
-        result = espn_etl.get_my_roster()
+        result = espn_etl.get_my_roster(league_id)
     except Exception:
         return []
     roster = (result.get("team") or {}).get("roster") or []
@@ -49,11 +49,12 @@ def _roster_ids() -> list[str]:
 
 
 @router.get("/optimal")
-def get_optimal(season: int | None = None, week: int | None = None) -> dict:
+def get_optimal(season: int | None = None, week: int | None = None,
+                league_id: str | None = None) -> dict:
     season = season or current_season()
     week = week if week is not None else _default_week(season)
 
-    roster_ids = _roster_ids()
+    roster_ids = _roster_ids(league_id)
     if not roster_ids:
         return {
             "starters": [], "bench": [], "current_total": None, "optimal_total": None,

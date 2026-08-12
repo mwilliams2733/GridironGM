@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { ArrowRight, Plus, Trash2, TriangleAlert } from "lucide-react";
 import { api } from "@/lib/api";
+import { useLeagueKey } from "@/lib/league";
 import { PageHeader } from "@/components/Layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -166,13 +167,14 @@ function ManualRosterDialog({ open, onOpenChange }: { open: boolean; onOpenChang
 }
 
 export function Lineup() {
+  const leagueKey = useLeagueKey();
   const [week, setWeek] = useState<string>("current");
   const [modalOpen, setModalOpen] = useState(false);
 
-  const rosterQuery = useQuery({ queryKey: ["league-roster"], queryFn: api.league.roster });
+  const rosterQuery = useQuery({ queryKey: ["league-roster", leagueKey], queryFn: api.league.roster });
   const weekParam = week === "current" ? undefined : Number(week);
   const lineupQuery = useQuery({
-    queryKey: ["lineup-optimal", weekParam],
+    queryKey: ["lineup-optimal", leagueKey, weekParam],
     queryFn: () => api.lineup.optimal({ week: weekParam }),
     enabled: rosterQuery.data?.mode !== "none",
   });

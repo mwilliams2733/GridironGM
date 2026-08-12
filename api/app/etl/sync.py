@@ -30,8 +30,21 @@ def run_sync(scope: str = "all") -> dict:
                 from .adp import sync_adp
                 results["adp"] = sync_adp()
             elif name == "espn":
+                # Every configured league syncs; one unconfigured league must not
+                # stop the others, so each is reported independently.
+                from ..config import league_ids
                 from .espn import espn_available, sync_espn
-                results["espn"] = sync_espn() if espn_available() else "skipped (no league_id — manual mode)"
+                per_league = {}
+                for lid in league_ids():
+                    if not espn_available(lid):
+                        per_league[lid] = "skipped (no league_id — manual mode)"
+                        continue
+                    try:
+                        per_league[lid] = sync_espn(lid)
+                    except Exception as exc:
+                        log.exception("espn sync failed for %s", lid)
+                        per_league[lid] = f"error: {exc}"
+                results["espn"] = per_league
         except Exception as exc:
             log.exception("sync %s failed", name)
             results[name] = f"error: {exc}"

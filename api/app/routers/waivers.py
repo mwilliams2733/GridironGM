@@ -16,9 +16,9 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/waivers", tags=["waivers"])
 
 
-def _my_roster_ids() -> list[str]:
+def _my_roster_ids(league_id: str | None = None) -> list[str]:
     try:
-        result = espn_etl.get_my_roster()
+        result = espn_etl.get_my_roster(league_id)
     except Exception:
         return []
     roster = (result.get("team") or {}).get("roster") or []
@@ -33,8 +33,9 @@ def _my_roster_ids() -> list[str]:
     return ids
 
 
-def _free_agent_ids(my_roster: list[str], season: int) -> tuple[list[str], str | None]:
-    cache = espn_etl.read_cache("free_agents")
+def _free_agent_ids(my_roster: list[str], season: int,
+                    league_id: str | None = None) -> tuple[list[str], str | None]:
+    cache = espn_etl.read_cache("free_agents", league_id)
     if cache and cache.get("data"):
         players = all_players()
         ids = []
@@ -58,10 +59,10 @@ def _free_agent_ids(my_roster: list[str], season: int) -> tuple[list[str], str |
 
 
 @router.get("/rankings")
-def get_rankings(week: int = 1) -> dict:
+def get_rankings(week: int = 1, league_id: str | None = None) -> dict:
     season = current_season()
-    my_roster = _my_roster_ids()
-    fa_ids, warning = _free_agent_ids(my_roster, season)
+    my_roster = _my_roster_ids(league_id)
+    fa_ids, warning = _free_agent_ids(my_roster, season, league_id)
     if not fa_ids:
         return {"rankings": [], "warning": warning or "no free agents available"}
 

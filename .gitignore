@@ -23,6 +23,8 @@ data/*.duckdb
 data/*.parquet
 data/cache/
 data/espn_cache/
+# Live per-league draft state — local, like the ESPN cache
+data/drafts/
 
 # OS / editor
 .DS_Store

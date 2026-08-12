@@ -1,12 +1,17 @@
 import type {
   DashboardResponse,
   DraftBoardResponse,
+  DraftEspnSyncResponse,
   DraftMyRosterResponse,
   DraftPickRequest,
+  DraftPickResponse,
   DraftRecommendationResponse,
   DraftResetRequest,
+  DraftResetResponse,
+  DraftUndoResponse,
   HealthResponse,
   LeagueConfig,
+  LeaguesResponse,
   LineupResult,
   PlayersResponse,
   RosterResponse,
@@ -28,8 +33,30 @@ export class ApiError extends Error {
   }
 }
 
+/** League every request is scoped to. Set by LeagueProvider on mount and on switch.
+ *
+ * Kept module-level so `request` can attach it without threading a league id
+ * through all ~18 call sites. React Query keys must still include the league id
+ * (see useLeague) or a switch would serve the previous league's cached data. */
+let activeLeagueId: string | null = null;
+
+export function setActiveLeagueId(id: string | null): void {
+  activeLeagueId = id;
+}
+
+export function getActiveLeagueId(): string | null {
+  return activeLeagueId;
+}
+
+function withLeague(path: string): string {
+  if (!activeLeagueId) return path;
+  // Never override an explicit league_id already on the path.
+  if (/[?&]league_id=/.test(path)) return path;
+  return `${path}${path.includes("?") ? "&" : "?"}league_id=${encodeURIComponent(activeLeagueId)}`;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`/api${path}`, {
+  const res = await fetch(`/api${withLeague(path)}`, {
     headers: { "Content-Type": "application/json" },
     ...init,
   });
@@ -60,6 +87,8 @@ function qs(params: Record<string, string | number | boolean | undefined | null>
 export const api = {
   health: () => request<HealthResponse>("/health"),
   config: () => request<LeagueConfig>("/config"),
+  /** Not league-scoped — this is the list the switcher is built from. */
+  leagues: () => request<LeaguesResponse>("/leagues"),
   sync: (scope = "all") => request<SyncResponse>(`/sync${qs({ scope })}`, { method: "POST" }),
   syncStatus: () => request<SyncStatusResponse>("/sync/status"),
 
@@ -83,16 +112,17 @@ export const api = {
   draft: {
     board: (limit?: number) => request<DraftBoardResponse>(`/draft/board${qs({ limit })}`),
     pick: (body: DraftPickRequest) =>
-      request<DraftBoardResponse>("/draft/pick", {
+      request<DraftPickResponse>("/draft/pick", {
         method: "POST",
         body: JSON.stringify(body),
       }),
-    undo: () => request<DraftBoardResponse>("/draft/undo", { method: "POST" }),
+    undo: () => request<DraftUndoResponse>("/draft/undo", { method: "POST" }),
     reset: (body: DraftResetRequest = {}) =>
-      request<DraftBoardResponse>("/draft/reset", {
+      request<DraftResetResponse>("/draft/reset", {
         method: "POST",
         body: JSON.stringify(body),
       }),
+    syncEspn: () => request<DraftEspnSyncResponse>("/draft/sync-espn", { method: "POST" }),
     recommendation: () => request<DraftRecommendationResponse>("/draft/recommendation"),
     myRoster: () => request<DraftMyRosterResponse>("/draft/my-roster"),
   },

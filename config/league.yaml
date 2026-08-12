@@ -2,10 +2,12 @@
 # Nothing in application logic may hard-code these values.
 
 league:
+  # Shared defaults. Per-league overrides live in `leagues:` at the bottom of
+  # this file; scoring and roster rules below are shared by every league.
   name: "My ESPN League"
   platform: espn
-  teams: 12
-  season: 2026          # season being played/drafted for
+  teams: 12             # default team count; each league may override
+  season: 2026          # season being played/drafted for (global — all leagues)
   history_seasons: 3    # completed seasons of history to ingest for projections
 
 scoring:
@@ -78,3 +80,45 @@ espn:
   # C:\Users\mwill\.secrets\shared.env or config/espn.local.yaml (gitignored).
   league_id: null
   year: 2026
+
+# ---------------------------------------------------------------------------
+# The leagues you play in. Everything above is shared; an entry here overrides
+# only what genuinely differs between leagues.
+#
+#   id                slug used in URLs and data filenames — do not rename
+#                     mid-season, it keys the stored draft and roster cache
+#   teams             10-12; drives VORP replacement level, so it must be right
+#   draft.my_slot     your position in the snake order (1..teams), null = ask
+#   espn_league_id    from the ESPN league URL (?leagueId=...) — not a secret
+#
+# espn_s2 / SWID come from shared.env and cover every league on that ESPN
+# account. Add `espn_s2:`/`swid:` to an entry only for a league on a different
+# account.
+# ---------------------------------------------------------------------------
+leagues:
+  - id: league1
+    name: "League 1"
+    teams: 12
+    espn_league_id: null      # TODO: fill in from the ESPN league URL
+    draft: { my_slot: null, rounds: 16 }
+
+  - id: league2
+    name: "League 2"
+    teams: 12
+    espn_league_id: null      # TODO
+    draft: { my_slot: null, rounds: 16 }
+
+  - id: league3
+    name: "League 3"
+    teams: 10
+    espn_league_id: null      # TODO
+    draft: { my_slot: null, rounds: 16 }
+
+  - id: league4
+    name: "League 4"
+    teams: 10
+    espn_league_id: null      # TODO
+    draft: { my_slot: null, rounds: 16 }
+
+# League selected when a request does not name one.
+active: league1

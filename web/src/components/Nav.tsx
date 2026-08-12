@@ -1,8 +1,9 @@
 import { NavLink } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { RefreshCw, Radio } from "lucide-react";
+import { RefreshCw, Radio, Trophy } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import { useLeague } from "@/lib/league";
 import { cn } from "@/lib/utils";
 
 const links = [
@@ -23,6 +24,40 @@ function timeAgo(iso: string | null | undefined): string {
   const hrs = Math.floor(mins / 60);
   if (hrs < 24) return `${hrs}h ago`;
   return `${Math.floor(hrs / 24)}d ago`;
+}
+
+/** Switches which of your leagues the whole app is showing. */
+function LeagueSwitcher() {
+  const { leagueId, leagues, setLeague, isLoading } = useLeague();
+
+  if (isLoading || leagues.length === 0) return null;
+  // A single league needs no switcher — show it as a label instead.
+  if (leagues.length === 1) {
+    return (
+      <span className="hidden items-center gap-1.5 text-xs text-field-400 sm:flex">
+        <Trophy className="h-3.5 w-3.5 text-hash-500" />
+        {leagues[0].name}
+      </span>
+    );
+  }
+
+  return (
+    <label className="flex items-center gap-1.5" title="Switch league">
+      <Trophy className="h-3.5 w-3.5 text-hash-500" />
+      <span className="sr-only">League</span>
+      <select
+        value={leagueId ?? ""}
+        onChange={(e) => setLeague(e.target.value)}
+        className="h-8 rounded-md border border-field-600 bg-field-900 px-2 font-display text-xs font-medium uppercase tracking-wide text-field-100 transition-colors hover:border-hash-500 focus:border-hash-500 focus:outline-none"
+      >
+        {leagues.map((l) => (
+          <option key={l.id} value={l.id}>
+            {l.name} · {l.teams}-team
+          </option>
+        ))}
+      </select>
+    </label>
+  );
 }
 
 export function Nav() {
@@ -83,6 +118,7 @@ export function Nav() {
         </nav>
 
         <div className="ml-auto flex items-center gap-3">
+          <LeagueSwitcher />
           <div className="hidden items-center gap-1.5 text-xs text-field-400 sm:flex">
             <Radio className="h-3 w-3 text-hash-500" />
             <span className="tabular">{timeAgo(lastSynced)}</span>

@@ -10,6 +10,7 @@ import {
   YAxis,
 } from "recharts";
 import { api } from "@/lib/api";
+import { useLeagueKey } from "@/lib/league";
 import { PageHeader } from "@/components/Layout";
 import { StatTile } from "@/components/StatTile";
 import { EmptyState, ErrorState, CardSkeleton } from "@/components/States";
@@ -28,7 +29,8 @@ function str(v: unknown): string {
 }
 
 export function Dashboard() {
-  const dashboardQuery = useQuery({ queryKey: ["dashboard"], queryFn: api.dashboard });
+  const leagueKey = useLeagueKey();
+  const dashboardQuery = useQuery({ queryKey: ["dashboard", leagueKey], queryFn: api.dashboard });
 
   if (dashboardQuery.isLoading) {
     return (

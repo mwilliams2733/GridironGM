@@ -29,9 +29,9 @@ def _resolve_roster_players(roster: list[dict]) -> list[dict]:
 
 
 @router.get("/roster")
-def get_roster() -> dict:
+def get_roster(league_id: str | None = None) -> dict:
     try:
-        result = espn_etl.get_my_roster()
+        result = espn_etl.get_my_roster(league_id)
     except Exception as exc:
         log.warning("get_my_roster failed: %s", exc)
         return {"mode": "none", "team": {"name": "My Team", "roster": []}, "warning": str(exc)}
@@ -53,7 +53,7 @@ class ManualRosterBody(BaseModel):
 
 
 @router.post("/roster")
-def post_roster(body: ManualRosterBody) -> dict:
+def post_roster(body: ManualRosterBody, league_id: str | None = None) -> dict:
     players = all_players()
     resolved, unresolved = [], []
     for p in body.players:
@@ -62,13 +62,13 @@ def post_roster(body: ManualRosterBody) -> dict:
             resolved.append({"name": p.name, "position": p.position, "team": p.team, "player_id": pid})
         else:
             unresolved.append(p.name)
-    espn_etl.set_manual_roster([p.dict() for p in body.players])
+    espn_etl.set_manual_roster([p.dict() for p in body.players], league_id)
     return {"resolved": resolved, "unresolved": unresolved}
 
 
 @router.get("/teams")
-def get_teams() -> dict:
-    cache = espn_etl.read_cache("teams")
+def get_teams(league_id: str | None = None) -> dict:
+    cache = espn_etl.read_cache("teams", league_id)
     if not cache:
         return {"teams": [], "warning": "no ESPN sync yet"}
     return {"teams": cache.get("data", [])}
@@ -79,8 +79,8 @@ class MyTeamBody(BaseModel):
 
 
 @router.post("/my-team")
-def post_my_team(body: MyTeamBody) -> dict:
-    espn_etl.set_my_team(body.team_id)
+def post_my_team(body: MyTeamBody, league_id: str | None = None) -> dict:
+    espn_etl.set_my_team(body.team_id, league_id)
     return {"team_id": body.team_id}
 
 
