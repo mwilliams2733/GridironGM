@@ -68,6 +68,23 @@ sync in the header, which re-pulls three seasons of weekly stats and takes
 minutes. Preseason box scores are deliberately not ingested; see
 docs/FINDINGS.md for why depth charts are the signal that matters instead.
 
+### Mock drafts
+
+**Mock draft** in the draft room switches to a throwaway copy of the league
+(`data/drafts/<id>.mock.json`) — your real draft is never touched, so you can
+practise the week before without walking into draft day with phantom picks on
+the board. A fresh mock inherits your real draft slot.
+
+**Sim to my pick** runs the room on ADP and stops when you're on the clock;
+**Sim full draft** runs all 192. The simulated room picks by ADP with gaussian
+jitter (Chalk / Realistic / Chaotic), so runs and slides happen — measured at
+roughly a 5-pick spread around ADP on the Realistic setting. Two rules keep the
+tail sane: kickers and defenses only go in the last two rounds, and no team
+takes a third QB or TE. Past the end of the ADP list (212 ranked players against
+192 picks) the room falls back to VORP.
+
+Pass a `seed` to `POST /api/draft/simulate` to reproduce a draft exactly.
+
 If a league has `espn_league_id` set, **ESPN** in the draft room pulls picks made in
 the ESPN draft room. It's idempotent — re-sync as often as you like; it only appends
 what's new and never overwrites a pick you typed. Verify it against an ESPN **mock

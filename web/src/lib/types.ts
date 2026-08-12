@@ -195,6 +195,8 @@ export interface DraftBoardResponse {
   tier_depth: Record<string, Record<string, number>>;
   teams: DraftTeam[];
   league: LeagueRef;
+  /** True when this board is a mock draft, not your real one. */
+  mock: boolean;
   [key: string]: unknown;
 }
 
@@ -229,6 +231,24 @@ export interface DraftEspnSyncResponse {
   /** ESPN player ids that could not be matched to a player in our table. */
   unresolved: (number | string)[];
   total_picks: number;
+}
+
+/** POST /draft/simulate — picks the simulated room just made. */
+export interface DraftSimulateRequest {
+  mode?: "to_my_pick" | "picks";
+  count?: number;
+  randomness?: "chalk" | "realistic" | "chaotic";
+  seed?: number | null;
+}
+
+export interface DraftSimulateResponse {
+  added: number;
+  picks: DraftPick[];
+  /** Why the sim stopped: reached your turn, hit the count, or ran out of draft. */
+  stopped: "my_pick" | "count" | "draft_complete" | "pool_empty" | "no_board";
+  current_pick: number;
+  on_the_clock?: number;
+  mock?: boolean;
 }
 
 /** POST /draft/reset — the fresh state. */

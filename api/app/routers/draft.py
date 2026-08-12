@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -10,6 +11,7 @@ from pydantic import BaseModel
 
 from ..config import current_season, draft_state_path, league_config, resolve_league
 from ..etl import espn as espn_etl
+from ..models import mocksim
 from ..models import projections as proj
 from ..models import vorp
 from ._common import all_players, records, resolve_espn_player
@@ -32,10 +34,15 @@ def _default_state() -> dict:
     return {"picks": [], "my_slot": None}
 
 
-def _load_state(league_id: str | None = None) -> dict:
-    path = draft_state_path(league_id)
+def _load_state(league_id: str | None = None, mock: bool = False) -> dict:
+    path = draft_state_path(league_id, mock)
     if not path.exists():
-        return _default_state()
+        state = _default_state()
+        if mock:
+            # A fresh mock inherits your real draft slot — you are practising the
+            # same seat, and re-entering it on every toggle is pure friction.
+            state["my_slot"] = _load_state(league_id, mock=False).get("my_slot")
+        return state
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
@@ -45,8 +52,8 @@ def _load_state(league_id: str | None = None) -> dict:
     return state
 
 
-def _save_state(state: dict, league_id: str | None = None) -> None:
-    draft_state_path(league_id).write_text(json.dumps(state, indent=1), encoding="utf-8")
+def _save_state(state: dict, league_id: str | None = None, mock: bool = False) -> None:
+    draft_state_path(league_id, mock).write_text(json.dumps(state, indent=1), encoding="utf-8")
 
 
 def _drafted_ids(state: dict) -> set[str]:
@@ -124,9 +131,9 @@ def _round_and_slot(overall: int, teams: int) -> tuple[int, int]:
 
 
 @router.get("/board")
-def get_board(limit: int = 50, league_id: str | None = None) -> dict:
+def get_board(limit: int = 50, league_id: str | None = None, mock: bool = False) -> dict:
     lid = resolve_league(league_id)
-    state = _load_state(lid)
+    state = _load_state(lid, mock)
     cfg = league_config(lid)
     season = current_season()
     season_proj = _season_proj(season)
@@ -177,6 +184,7 @@ def get_board(limit: int = 50, league_id: str | None = None) -> dict:
         "tier_depth": tier_depth,
         "teams": _team_rosters(state, cfg),
         "league": {"id": cfg["league"]["id"], "name": cfg["league"]["name"], "teams": teams},
+        "mock": mock,
     }
 
 
@@ -219,23 +227,23 @@ def _build_pick(state: dict, cfg: dict, player_id: str, slot: int | None,
 
 
 @router.post("/pick")
-def post_pick(body: PickBody, league_id: str | None = None) -> dict:
+def post_pick(body: PickBody, league_id: str | None = None, mock: bool = False) -> dict:
     lid = resolve_league(league_id)
-    state = _load_state(lid)
+    state = _load_state(lid, mock)
     if body.player_id in _drafted_ids(state):
         raise HTTPException(status_code=400, detail=f"{body.player_id} already drafted")
     pick = _build_pick(state, league_config(lid), body.player_id, body.slot, body.by_me, "manual")
     state["picks"].append(pick)
-    _save_state(state, lid)
+    _save_state(state, lid, mock)
     return {"picks": len(state["picks"]), "pick": pick}
 
 
 @router.post("/undo")
-def post_undo(league_id: str | None = None) -> dict:
+def post_undo(league_id: str | None = None, mock: bool = False) -> dict:
     lid = resolve_league(league_id)
-    state = _load_state(lid)
+    state = _load_state(lid, mock)
     undone = state["picks"].pop() if state["picks"] else None
-    _save_state(state, lid)
+    _save_state(state, lid, mock)
     return {"picks": len(state["picks"]), "undone": undone}
 
 
@@ -244,7 +252,8 @@ class ResetBody(BaseModel):
 
 
 @router.post("/reset")
-def post_reset(body: ResetBody | None = None, league_id: str | None = None) -> dict:
+def post_reset(body: ResetBody | None = None, league_id: str | None = None,
+               mock: bool = False) -> dict:
     lid = resolve_league(league_id)
     state = _default_state()
     if body and body.my_slot is not None:
@@ -252,8 +261,106 @@ def post_reset(body: ResetBody | None = None, league_id: str | None = None) -> d
         if not 1 <= body.my_slot <= teams:
             raise HTTPException(status_code=400, detail=f"my_slot must be 1..{teams}")
         state["my_slot"] = body.my_slot
-    _save_state(state, lid)
+    _save_state(state, lid, mock)
     return state
+
+
+class SimulateBody(BaseModel):
+    # "to_my_pick" runs the room until you are on the clock; "picks" advances a
+    # fixed number regardless of whose turn it is.
+    mode: str = "to_my_pick"
+    count: int = 1
+    randomness: str = mocksim.DEFAULT_RANDOMNESS
+    seed: int | None = None
+
+
+@router.post("/simulate")
+def post_simulate(body: SimulateBody | None = None, league_id: str | None = None,
+                  mock: bool = True) -> dict:
+    """Run the room on ADP until it is your turn.
+
+    Defaults to `mock=True`: simulating into a real draft would poison the board
+    you actually draft from, so you have to ask for that explicitly.
+
+    The board is built once and drafted players are dropped from the pool as we
+    go, rather than rebuilt each pick — opponent choice reads only pos/adp/vorp,
+    none of which depend on who has already been taken, and rebuilding 190 times
+    would take minutes.
+    """
+    body = body or SimulateBody()
+    lid = resolve_league(league_id)
+    cfg = league_config(lid)
+    teams = int(cfg["league"]["teams"])
+    rounds = int(cfg["draft"]["rounds"])
+    total_picks = teams * rounds
+
+    state = _load_state(lid, mock)
+    my_slot = _my_slot(state, cfg)
+    if body.mode == "to_my_pick" and not my_slot:
+        raise HTTPException(
+            status_code=400,
+            detail="Set your draft slot before simulating to your pick.",
+        )
+
+    season = current_season()
+    board = vorp.vorp_board(
+        drafted_ids=_drafted_ids(state), my_roster=_my_roster(state), season=season,
+        season_proj=_season_proj(season), pick_number=len(state["picks"]) + 1, cfg=cfg,
+    )
+    if board.empty:
+        return {"added": 0, "picks": [], "stopped": "no_board",
+                "current_pick": len(state["picks"]) + 1}
+
+    pool = board.set_index("player_id", drop=False)
+    # Roster composition per slot, so opponents respect position caps.
+    counts: dict[int, dict[str, int]] = {s: {} for s in range(1, teams + 1)}
+    for p in state["picks"]:
+        slot, pos = p.get("slot"), p.get("position")
+        if slot in counts and pos:
+            counts[slot][pos] = counts[slot].get(pos, 0) + 1
+
+    rng = random.Random(body.seed)
+    added: list[dict] = []
+    stopped = "count"
+
+    while True:
+        overall = len(state["picks"]) + 1
+        if overall > total_picks:
+            stopped = "draft_complete"
+            break
+        rnd, slot = _round_and_slot(overall, teams)
+        if body.mode == "to_my_pick" and slot == my_slot:
+            stopped = "my_pick"
+            break
+        if body.mode == "picks" and len(added) >= max(1, body.count):
+            stopped = "count"
+            break
+        if pool.empty:
+            stopped = "pool_empty"
+            break
+
+        row = mocksim.choose_pick(pool, counts[slot], rnd, rounds, rng, body.randomness)
+        if row is None:
+            stopped = "pool_empty"
+            break
+
+        pick = {
+            "overall": overall, "round": rnd, "slot": slot,
+            "player_id": row.player_id, "name": row["name"], "position": row.pos,
+            "by_me": slot == my_slot, "source": "sim",
+        }
+        state["picks"].append(pick)
+        added.append(pick)
+        counts[slot][row.pos] = counts[slot].get(row.pos, 0) + 1
+        pool = pool.drop(index=row.player_id)
+
+    _save_state(state, lid, mock)
+    return {
+        "added": len(added), "picks": added, "stopped": stopped,
+        "current_pick": len(state["picks"]) + 1,
+        "on_the_clock": _round_and_slot(min(len(state["picks"]) + 1, total_picks), teams)[1],
+        "mock": mock,
+    }
 
 
 @router.post("/sync-espn")
@@ -329,9 +436,9 @@ def post_sync_espn(league_id: str | None = None) -> dict:
 
 
 @router.get("/recommendation")
-def get_recommendation(league_id: str | None = None) -> dict:
+def get_recommendation(league_id: str | None = None, mock: bool = False) -> dict:
     lid = resolve_league(league_id)
-    state = _load_state(lid)
+    state = _load_state(lid, mock)
     cfg = league_config(lid)
     season = current_season()
     season_proj = _season_proj(season)
@@ -356,9 +463,9 @@ def get_recommendation(league_id: str | None = None) -> dict:
 
 
 @router.get("/my-roster")
-def get_my_roster_endpoint(league_id: str | None = None) -> dict:
+def get_my_roster_endpoint(league_id: str | None = None, mock: bool = False) -> dict:
     lid = resolve_league(league_id)
-    state = _load_state(lid)
+    state = _load_state(lid, mock)
     season = current_season()
     season_proj = _season_proj(season)
     cfg = league_config(lid)

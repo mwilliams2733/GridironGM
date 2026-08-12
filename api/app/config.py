@@ -199,10 +199,16 @@ def ensure_dirs() -> None:
         d.mkdir(parents=True, exist_ok=True)
 
 
-def draft_state_path(league_id: str | None = None) -> Path:
-    """Where one league's draft picks are persisted."""
+def draft_state_path(league_id: str | None = None, mock: bool = False) -> Path:
+    """Where one league's draft picks are persisted.
+
+    Mock drafts live in a separate file so practising can never corrupt the
+    board you draft for real — the failure mode being to walk into draft day
+    with a couple hundred phantom picks already on it.
+    """
     ensure_dirs()
-    return DRAFTS_DIR / f"{resolve_league(league_id)}.json"
+    lid = resolve_league(league_id)
+    return DRAFTS_DIR / (f"{lid}.mock.json" if mock else f"{lid}.json")
 
 
 def league_cache_dir(league_id: str | None = None) -> Path:

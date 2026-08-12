@@ -8,6 +8,8 @@ import type {
   DraftRecommendationResponse,
   DraftResetRequest,
   DraftResetResponse,
+  DraftSimulateRequest,
+  DraftSimulateResponse,
   DraftUndoResponse,
   HealthResponse,
   LeagueConfig,
@@ -53,6 +55,14 @@ function withLeague(path: string): string {
   // Never override an explicit league_id already on the path.
   if (/[?&]league_id=/.test(path)) return path;
   return `${path}${path.includes("?") ? "&" : "?"}league_id=${encodeURIComponent(activeLeagueId)}`;
+}
+
+/** Appends `mock` to a draft path. Kept explicit per call rather than module-level
+ *  like the league: mock is a mode of the draft room, not of the whole session,
+ *  and defaulting it globally is how a practice draft ends up in real state. */
+function withMock(path: string, mock?: boolean): string {
+  if (!mock) return path;
+  return `${path}${path.includes("?") ? "&" : "?"}mock=true`;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -110,21 +120,30 @@ export const api = {
   },
 
   draft: {
-    board: (limit?: number) => request<DraftBoardResponse>(`/draft/board${qs({ limit })}`),
-    pick: (body: DraftPickRequest) =>
-      request<DraftPickResponse>("/draft/pick", {
+    board: (limit?: number, mock?: boolean) =>
+      request<DraftBoardResponse>(withMock(`/draft/board${qs({ limit })}`, mock)),
+    pick: (body: DraftPickRequest, mock?: boolean) =>
+      request<DraftPickResponse>(withMock("/draft/pick", mock), {
         method: "POST",
         body: JSON.stringify(body),
       }),
-    undo: () => request<DraftUndoResponse>("/draft/undo", { method: "POST" }),
-    reset: (body: DraftResetRequest = {}) =>
-      request<DraftResetResponse>("/draft/reset", {
+    undo: (mock?: boolean) =>
+      request<DraftUndoResponse>(withMock("/draft/undo", mock), { method: "POST" }),
+    reset: (body: DraftResetRequest = {}, mock?: boolean) =>
+      request<DraftResetResponse>(withMock("/draft/reset", mock), {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    simulate: (body: DraftSimulateRequest = {}, mock = true) =>
+      request<DraftSimulateResponse>(withMock("/draft/simulate", mock), {
         method: "POST",
         body: JSON.stringify(body),
       }),
     syncEspn: () => request<DraftEspnSyncResponse>("/draft/sync-espn", { method: "POST" }),
-    recommendation: () => request<DraftRecommendationResponse>("/draft/recommendation"),
-    myRoster: () => request<DraftMyRosterResponse>("/draft/my-roster"),
+    recommendation: (mock?: boolean) =>
+      request<DraftRecommendationResponse>(withMock("/draft/recommendation", mock)),
+    myRoster: (mock?: boolean) =>
+      request<DraftMyRosterResponse>(withMock("/draft/my-roster", mock)),
   },
 
   waivers: {

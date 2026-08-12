@@ -1,7 +1,17 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Download, Redo2, RefreshCw, RotateCcw, Search, Undo2, Zap } from "lucide-react";
+import {
+  Download,
+  FastForward,
+  FlaskConical,
+  Redo2,
+  RefreshCw,
+  RotateCcw,
+  Search,
+  Undo2,
+  Zap,
+} from "lucide-react";
 import { api } from "@/lib/api";
 import { useLeague, useLeagueKey } from "@/lib/league";
 import type { VorpRow } from "@/lib/types";
@@ -110,11 +120,25 @@ export function Draft() {
   const [slotInput, setSlotInput] = useState("1");
   // null = follow the snake order. Override only for trades / out-of-order entry.
   const [assignSlot, setAssignSlot] = useState<number | null>(null);
+  // Mock mode reads and writes a separate draft file, so practising can never
+  // touch the board you draft for real. Deliberately not persisted — every visit
+  // to the draft room starts on your real draft.
+  const [mock, setMock] = useState(false);
+  const [randomness, setRandomness] = useState<"chalk" | "realistic" | "chaotic">("realistic");
 
   const configQuery = useQuery({ queryKey: ["config", leagueKey], queryFn: api.config });
-  const boardQuery = useQuery({ queryKey: ["draft-board", leagueKey], queryFn: () => api.draft.board(300) });
-  const recQuery = useQuery({ queryKey: ["draft-rec", leagueKey], queryFn: api.draft.recommendation });
-  const myRosterQuery = useQuery({ queryKey: ["draft-my-roster", leagueKey], queryFn: api.draft.myRoster });
+  const boardQuery = useQuery({
+    queryKey: ["draft-board", leagueKey, mock],
+    queryFn: () => api.draft.board(300, mock),
+  });
+  const recQuery = useQuery({
+    queryKey: ["draft-rec", leagueKey, mock],
+    queryFn: () => api.draft.recommendation(mock),
+  });
+  const myRosterQuery = useQuery({
+    queryKey: ["draft-my-roster", leagueKey, mock],
+    queryFn: () => api.draft.myRoster(mock),
+  });
 
   const invalidateAll = () => {
     queryClient.invalidateQueries({ queryKey: ["draft-board"] });
@@ -124,7 +148,7 @@ export function Draft() {
 
   const pickMutation = useMutation({
     mutationFn: ({ player_id, slot }: { player_id: string; slot?: number }) =>
-      api.draft.pick({ player_id, slot }),
+      api.draft.pick({ player_id, slot }, mock),
     onSuccess: (data) => {
       const p = data.pick;
       if (p) {
@@ -157,6 +181,24 @@ export function Draft() {
     onError: (err: Error) => toast.error(`Update failed: ${err.message}`),
   });
 
+  const simMutation = useMutation({
+    mutationFn: (mode: "to_my_pick" | "picks") =>
+      api.draft.simulate({ mode, count: mode === "picks" ? 1000 : 1, randomness }, true),
+    onSuccess: (r) => {
+      const where =
+        r.stopped === "my_pick"
+          ? "You're on the clock."
+          : r.stopped === "draft_complete"
+            ? "Draft complete."
+            : r.stopped === "pool_empty"
+              ? "Ran out of players."
+              : "";
+      toast.success(`Simulated ${r.added} pick${r.added === 1 ? "" : "s"}. ${where}`);
+      invalidateAll();
+    },
+    onError: (err: Error) => toast.error(`Simulation failed: ${err.message}`),
+  });
+
   const espnSyncMutation = useMutation({
     mutationFn: api.draft.syncEspn,
     onSuccess: (r) => {
@@ -176,7 +218,7 @@ export function Draft() {
   });
 
   const undoMutation = useMutation({
-    mutationFn: api.draft.undo,
+    mutationFn: () => api.draft.undo(mock),
     onSuccess: () => {
       toast("Last pick undone.");
       invalidateAll();
@@ -185,7 +227,7 @@ export function Draft() {
   });
 
   const resetMutation = useMutation({
-    mutationFn: (my_slot?: number) => api.draft.reset(my_slot ? { my_slot } : {}),
+    mutationFn: (my_slot?: number) => api.draft.reset(my_slot ? { my_slot } : {}, mock),
     onSuccess: () => {
       toast.success("Draft reset.");
       invalidateAll();
@@ -273,6 +315,15 @@ export function Draft() {
         actions={
           <>
             <Button
+              variant={mock ? "default" : "outline"}
+              size="sm"
+              onClick={() => setMock((m) => !m)}
+              title="Practise on a throwaway copy of this draft"
+            >
+              <FlaskConical className="h-3.5 w-3.5" />
+              {mock ? "Mock: on" : "Mock draft"}
+            </Button>
+            <Button
               variant="outline"
               size="sm"
               onClick={() => refreshMutation.mutate()}
@@ -310,6 +361,52 @@ export function Draft() {
           </>
         }
       />
+
+      {mock && (
+        <div className="mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-amber-600/40 bg-amber-500/5 px-4 py-3">
+          <FlaskConical className="h-4 w-4 shrink-0 text-amber-500" />
+          <span className="text-sm text-amber-500">
+            <span className="font-semibold">Mock draft.</span> Picks go to a throwaway
+            copy — your real draft is untouched.
+          </span>
+
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <label className="flex items-center gap-1.5 text-xs text-field-400">
+              Room
+              <select
+                value={randomness}
+                onChange={(e) =>
+                  setRandomness(e.target.value as "chalk" | "realistic" | "chaotic")
+                }
+                className="h-8 rounded-md border border-field-600 bg-field-900 px-2 font-mono text-xs text-field-100 focus:border-hash-500 focus:outline-none"
+                title="How closely the simulated room follows ADP"
+              >
+                <option value="chalk">Chalk — near ADP</option>
+                <option value="realistic">Realistic</option>
+                <option value="chaotic">Chaotic — big reaches</option>
+              </select>
+            </label>
+            <Button
+              size="sm"
+              onClick={() => simMutation.mutate("to_my_pick")}
+              disabled={simMutation.isPending || needsSetup}
+              title={needsSetup ? "Set your draft slot first" : "Run the room until you're up"}
+            >
+              <FastForward className={cn("h-3.5 w-3.5", simMutation.isPending && "animate-pulse")} />
+              {simMutation.isPending ? "Simulating…" : "Sim to my pick"}
+            </Button>
+            <Button
+              size="sm"
+              variant="subtle"
+              onClick={() => simMutation.mutate("picks")}
+              disabled={simMutation.isPending}
+              title="Run every remaining pick"
+            >
+              Sim full draft
+            </Button>
+          </div>
+        </div>
+      )}
 
       {!needsSetup && onTheClock != null && (
         <div
