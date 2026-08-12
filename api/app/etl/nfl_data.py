@@ -138,6 +138,51 @@ def sync_snap_counts() -> int:
     return n
 
 
+def sync_depth_charts() -> int:
+    """Current depth chart position per player, for the season being drafted.
+
+    nflverse publishes a running series of snapshots (`dt`), one per scrape —
+    145 of them between March and August in 2026 — so we keep only the most
+    recent, which is the depth chart as of now. `pos_rank` is the ordinal within
+    the position group (1 = starter), which is the preseason signal that
+    actually moves fantasy value: box-score production in August does not.
+
+    Keyed on gsis_id, which is our player_id.
+    """
+    import nflreadpy as nfl
+
+    season = current_season()
+    df = _cached_pull(f"depth_charts_{season}", lambda: nfl.load_depth_charts([season]))
+    if df.empty:
+        log.warning("no depth chart data for %s", season)
+        return 0
+
+    latest_dt = df["dt"].max()
+    cur = df[df["dt"] == latest_dt]
+
+    out = pd.DataFrame({
+        "player_id": cur["gsis_id"],
+        # Raw nflverse abbreviation; the board's team column comes from the
+        # projections frame, which is already normalized. We join on player_id.
+        "team": cur["team"],
+        "pos": cur["pos_abb"],
+        "depth_rank": pd.to_numeric(cur["pos_rank"], errors="coerce"),
+        "updated_at": str(latest_dt),
+    }).dropna(subset=["player_id", "depth_rank"])
+
+    # A player can appear in several formation groups (e.g. 3WR sets); his depth
+    # is the best rank he holds at his own position.
+    out = (out.sort_values("depth_rank")
+              .drop_duplicates(["player_id", "pos"], keep="first")
+              .drop_duplicates("player_id", keep="first"))
+    out["depth_rank"] = out["depth_rank"].astype(int)
+
+    with connect() as conn:
+        n = replace_table(out, "depth_charts", conn)
+    mark_synced("depth_charts", f"{n} players @ {latest_dt}")
+    return n
+
+
 def sync_schedules() -> int:
     import nflreadpy as nfl
 
@@ -180,4 +225,5 @@ def sync_all_stats() -> dict[str, int]:
         "snap_counts": sync_snap_counts(),
         "schedules": sync_schedules(),
         "injuries": sync_injuries(),
+        "depth_charts": sync_depth_charts(),
     }

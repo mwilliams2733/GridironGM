@@ -30,6 +30,43 @@ export function TierBadge({ tier }: { tier: number | null | undefined }) {
   );
 }
 
+/** Depth chart rank, e.g. RB1 / WR2. Starters read neutral; anything below the
+ * top of the position group is flagged, since that's the preseason signal that
+ * actually moves value. A missing rank means "not synced", not "buried". */
+export function DepthBadge({
+  rank,
+  position,
+}: {
+  rank: number | null | undefined;
+  position?: string | null;
+}) {
+  if (rank === null || rank === undefined) {
+    return <span className="font-mono text-[11px] text-field-600">—</span>;
+  }
+  const label = `${position ?? ""}${rank}`;
+  const tone =
+    rank === 1
+      ? "border-hash-600/40 text-hash-500"
+      : rank === 2
+        ? "border-amber-600/40 text-amber-500"
+        : "border-field-600 text-field-500";
+  return (
+    <span
+      className={cn(
+        "inline-flex h-5 items-center justify-center rounded border px-1.5 font-mono text-[11px] font-semibold",
+        tone,
+      )}
+      title={
+        rank === 1
+          ? "Starter on the current depth chart"
+          : `No. ${rank} at his position on the current depth chart`
+      }
+    >
+      {label}
+    </span>
+  );
+}
+
 const POSITION_COLORS: Record<string, string> = {
   QB: "border-sky-500/40 text-sky-500",
   RB: "border-hash-600/40 text-hash-500",

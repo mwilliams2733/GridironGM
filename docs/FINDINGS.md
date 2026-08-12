@@ -35,6 +35,29 @@ unaffected and remains the primary path.
 Related: ESPN team ids are arbitrary and unrelated to draft position, so draft
 slot is derived from the order teams actually picked in round 1.
 
+## Preseason production is not ingested — by design (2026-08-12)
+
+`projections.py:_weekly()` reads only `_completed_seasons(season)` (2023-2025)
+with `week <= 18`, and `weekly_stats` holds zero rows for the season being
+drafted. That is not a config gap: nflverse's `load_player_stats` offers only
+`week | reg | post | reg+post` summary levels — preseason box scores are not in
+the feed at all.
+
+This is the right call regardless. Preseason production is a weak predictor
+(starters play a series or two against vanilla looks). The preseason signals that
+do move value are depth chart position, injuries and ADP drift, all three of
+which sync live via the `draft-day` scope (~6s):
+
+    depth (nflverse depth charts) + injuries + adp
+
+`load_depth_charts` publishes a running series of snapshots (`dt`) — 145 between
+March and August 2026 — so `sync_depth_charts` keeps only the most recent. Depth
+rank reaches the draft board as `depth_rank` and is flagged in the rationale only
+when > 1, since being the starter is the expected case.
+
+Note 2026 injuries are not published yet (nflreadpy bounds the season at 2025);
+that lane degrades to the completed seasons rather than failing.
+
 ## Odds cache holds the whole season (2026-08-12)
 
 `odds_games` carries no `week` column and books price all 272 games by August, so

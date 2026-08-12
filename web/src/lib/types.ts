@@ -69,11 +69,13 @@ export interface Player {
   [key: string]: unknown;
 }
 
-/** A row from vorp_board / draft board / recommendation lists. */
+/** A row from vorp_board / draft board / recommendation lists.
+ *  Note this abbreviates position as `pos` — the same convention as WaiverRow,
+ *  and unlike Player / draft picks, which spell it `position`. */
 export interface VorpRow {
   player_id: string;
   name: string;
-  position: string;
+  pos: string;
   team?: string | null;
   proj: Num;
   vorp: Num;
@@ -81,6 +83,9 @@ export interface VorpRow {
   bye: Num;
   adp: Num;
   adp_delta: Num;
+  /** Rank at his position on the current NFL depth chart (1 = starter).
+   *  Null means depth charts haven't been synced, not that he's buried. */
+  depth_rank: Num;
   rationale?: string | null;
   drafted?: boolean;
   [key: string]: unknown;
@@ -237,8 +242,20 @@ export interface DraftRecommendationResponse {
   alternatives: VorpRow[];
 }
 
+/** /draft/my-roster rows are NOT VorpRows — they carry `position` and
+ *  `proj_points`, not `pos` and `proj`. */
+export interface DraftMyRosterPick {
+  player_id: string;
+  name: string | null;
+  position: string | null;
+  proj_points: Num;
+}
+
 export interface DraftMyRosterResponse {
-  picks: (VorpRow & { slot?: string | null })[];
+  picks: DraftMyRosterPick[];
+  /** Position -> starter slots still unfilled on my roster. */
+  slot_suggestions: Record<string, number>;
+  my_slot: number | null;
 }
 
 // --- waivers.py ------------------------------------------------------------

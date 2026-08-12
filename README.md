@@ -61,6 +61,13 @@ dropdown for trades or out-of-order entry. Every pick is stored, so
 **Rosters by team** shows what every opponent has taken — which is what makes the
 recommendation aware of positional runs and your own remaining needs.
 
+The board shows each player's NFL **team** and **depth chart rank** (RB1/WR2/…),
+refreshed by **Update data** in the draft room. That runs a targeted `draft-day`
+sync — depth charts, injuries and ADP, about 6 seconds — rather than the full
+sync in the header, which re-pulls three seasons of weekly stats and takes
+minutes. Preseason box scores are deliberately not ingested; see
+docs/FINDINGS.md for why depth charts are the signal that matters instead.
+
 If a league has `espn_league_id` set, **ESPN** in the draft room pulls picks made in
 the ESPN draft room. It's idempotent — re-sync as often as you like; it only appends
 what's new and never overwrites a pick you typed. Verify it against an ESPN **mock

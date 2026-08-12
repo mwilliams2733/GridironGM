@@ -63,6 +63,12 @@ CREATE TABLE IF NOT EXISTS projections (
     proj_points REAL, floor REAL, ceiling REAL, components_json TEXT,
     PRIMARY KEY (scope, season, week, player_id)
 );
+-- Current depth chart position (1 = starter at that position group). Holds the
+-- latest nflverse snapshot only, not the historical series.
+CREATE TABLE IF NOT EXISTS depth_charts (
+    player_id TEXT PRIMARY KEY,
+    team TEXT, pos TEXT, depth_rank INTEGER, updated_at TEXT
+);
 CREATE TABLE IF NOT EXISTS sync_log (
     scope TEXT PRIMARY KEY, last_synced TEXT, detail TEXT
 );

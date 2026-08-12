@@ -168,6 +168,21 @@ def assign_tiers(df_pos: pd.DataFrame) -> pd.Series:
 # ---------------------------------------------------------------------------
 # Draft board
 # ---------------------------------------------------------------------------
+def depth_map() -> dict[str, int]:
+    """player_id -> current depth chart rank (1 = starter at his position group).
+
+    Empty when depth charts have never been synced; every caller treats a missing
+    rank as unknown rather than as a demotion.
+    """
+    try:
+        df = read_df("SELECT player_id, depth_rank FROM depth_charts")
+    except Exception:
+        return {}
+    if df.empty:
+        return {}
+    return df.dropna(subset=["depth_rank"]).set_index("player_id")["depth_rank"].astype(int).to_dict()
+
+
 def _bye_map(season: int) -> dict[str, int]:
     return proj._bye_weeks(season)
 
@@ -227,6 +242,9 @@ def vorp_board(drafted_ids: set[str] | None = None,
 
     board["bye"] = board.team.map(byes).astype("Int64")
     board["adp"] = board.player_id.map(adp_by_id)
+    # Current depth chart rank — the preseason signal that actually moves value.
+    # Left as NA when unknown so the UI can distinguish "not synced" from "buried".
+    board["depth_rank"] = board.player_id.map(depth_map()).astype("Int64")
     # adp_delta = how many picks past his ADP a player is still available.
     # Positive => he has FALLEN (market says he should be gone; he is a value here).
     # Negative => taking him now is a REACH relative to the market.
@@ -254,6 +272,10 @@ def vorp_board(drafted_ids: set[str] | None = None,
 
     def rationale(r) -> str:
         bits = [f"{r.pos} #{int(r.tier)} tier", f"VORP {r.vorp:+.0f}"]
+        # Only worth calling out when he is NOT the starter — "RB1" is the
+        # expected case and would be noise on every line.
+        if not pd.isna(r.depth_rank) and int(r.depth_rank) > 1:
+            bits.append(f"{r.pos}{int(r.depth_rank)} on depth chart")
         if r.adp == r.adp:
             if r.adp_delta == r.adp_delta and r.adp_delta > 8:
                 bits.append(f"falling (ADP {r.adp:.0f}, pick {ctx})")
@@ -271,7 +293,7 @@ def vorp_board(drafted_ids: set[str] | None = None,
     board["rationale"] = board.apply(rationale, axis=1)
     board = board.sort_values(["vorp"], ascending=False).reset_index(drop=True)
     cols = ["player_id", "name", "pos", "team", "proj", "vorp", "tier",
-            "bye", "adp", "adp_delta", "need_score", "rationale"]
+            "bye", "adp", "adp_delta", "depth_rank", "need_score", "rationale"]
     return board[cols]
 
 

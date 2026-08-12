@@ -13,11 +13,21 @@ log = logging.getLogger(__name__)
 
 SCOPES = ("stats", "odds", "adp", "espn")
 
+# What actually moves between now and your next pick. A full "stats" pull walks
+# three seasons of weekly data and takes minutes — unusable mid-draft — while
+# these three are the signals that change during camp and on draft night.
+DRAFT_DAY_SCOPES = ("depth", "injuries", "adp")
+
 
 def run_sync(scope: str = "all") -> dict:
     init_db()
     results: dict[str, object] = {}
-    scopes = SCOPES if scope == "all" else (scope,)
+    if scope == "draft-day":
+        scopes = DRAFT_DAY_SCOPES
+    elif scope == "all":
+        scopes = SCOPES
+    else:
+        scopes = (scope,)
     for name in scopes:
         try:
             if name == "stats":
@@ -29,6 +39,12 @@ def run_sync(scope: str = "all") -> dict:
             elif name == "adp":
                 from .adp import sync_adp
                 results["adp"] = sync_adp()
+            elif name == "depth":
+                from .nfl_data import sync_depth_charts
+                results["depth"] = sync_depth_charts()
+            elif name == "injuries":
+                from .nfl_data import sync_injuries
+                results["injuries"] = sync_injuries()
             elif name == "espn":
                 # Every configured league syncs; one unconfigured league must not
                 # stop the others, so each is reported independently.

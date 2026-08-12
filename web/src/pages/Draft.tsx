@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Download, Redo2, RotateCcw, Search, Undo2, Zap } from "lucide-react";
+import { Download, Redo2, RefreshCw, RotateCcw, Search, Undo2, Zap } from "lucide-react";
 import { api } from "@/lib/api";
 import { useLeague, useLeagueKey } from "@/lib/league";
 import type { VorpRow } from "@/lib/types";
@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { TierBadge, PositionBadge, AdpDeltaBadge } from "@/components/TierBadge";
+import { TierBadge, PositionBadge, AdpDeltaBadge, DepthBadge } from "@/components/TierBadge";
 import { EmptyState, ErrorState, TableSkeleton, CardSkeleton } from "@/components/States";
 import { cn, fmt1 } from "@/lib/utils";
 
@@ -37,10 +37,11 @@ function RecommendationHero({
         On the clock
       </div>
       <div className="flex flex-wrap items-center gap-3">
-        <PositionBadge position={row.position} />
+        <PositionBadge position={row.pos} />
         <TierBadge tier={row.tier} />
         <h2 className="font-display text-2xl font-semibold text-field-50">{row.name}</h2>
         <span className="text-sm text-field-400">{row.team ?? "FA"}</span>
+        <DepthBadge rank={row.depth_rank} position={row.pos} />
       </div>
       <div className="mt-3 flex flex-wrap gap-6">
         <div>
@@ -82,8 +83,9 @@ function AlternativeCard({
     <div className="flex flex-col gap-2 rounded-md border border-field-700 bg-field-900 p-3">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1.5">
-          <PositionBadge position={row.position} />
+          <PositionBadge position={row.pos} />
           <TierBadge tier={row.tier} />
+          <DepthBadge rank={row.depth_rank} position={row.pos} />
         </div>
         <span className="tabular font-mono text-xs text-hash-500">{fmt1(row.vorp)} vorp</span>
       </div>
@@ -143,6 +145,18 @@ export function Draft() {
   const draftPlayer = (player_id: string) =>
     pickMutation.mutate({ player_id, slot: assignSlot ?? undefined });
 
+  // Deliberately not a full sync: that re-pulls three seasons of weekly stats
+  // and takes minutes. Depth charts, injuries and ADP are what move during camp
+  // and on draft night, and they refresh in seconds.
+  const refreshMutation = useMutation({
+    mutationFn: () => api.sync("draft-day"),
+    onSuccess: () => {
+      toast.success("Depth charts, injuries and ADP refreshed.");
+      queryClient.invalidateQueries();
+    },
+    onError: (err: Error) => toast.error(`Update failed: ${err.message}`),
+  });
+
   const espnSyncMutation = useMutation({
     mutationFn: api.draft.syncEspn,
     onSuccess: (r) => {
@@ -182,7 +196,7 @@ export function Draft() {
   const board = boardQuery.data?.board ?? [];
   const filtered = useMemo(() => {
     let rows = board;
-    if (position !== "ALL") rows = rows.filter((r) => r.position === position);
+    if (position !== "ALL") rows = rows.filter((r) => r.pos === position);
     if (search.trim()) {
       const q = search.trim().toLowerCase();
       rows = rows.filter((r) => r.name.toLowerCase().includes(q));
@@ -258,6 +272,16 @@ export function Draft() {
         }
         actions={
           <>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => refreshMutation.mutate()}
+              disabled={refreshMutation.isPending}
+              title="Refresh depth charts, injuries and ADP"
+            >
+              <RefreshCw className={cn("h-3.5 w-3.5", refreshMutation.isPending && "animate-spin")} />
+              {refreshMutation.isPending ? "Updating…" : "Update data"}
+            </Button>
             {league?.espn_configured && (
               <Button
                 variant="outline"
@@ -435,6 +459,10 @@ export function Draft() {
                     <TableRow>
                       <TableHead>Player</TableHead>
                       <TableHead>Pos</TableHead>
+                      <TableHead>Team</TableHead>
+                      <TableHead title="Rank at his position on the current NFL depth chart">
+                        Depth
+                      </TableHead>
                       <TableHead role="button" onClick={() => setSortKey("tier")} className="cursor-pointer">
                         Tier
                       </TableHead>
@@ -457,7 +485,13 @@ export function Draft() {
                       <TableRow key={r.player_id}>
                         <TableCell className="font-medium text-field-100">{r.name}</TableCell>
                         <TableCell>
-                          <PositionBadge position={r.position} />
+                          <PositionBadge position={r.pos} />
+                        </TableCell>
+                        <TableCell className="font-mono text-xs text-field-400">
+                          {r.team ?? "FA"}
+                        </TableCell>
+                        <TableCell>
+                          <DepthBadge rank={r.depth_rank} position={r.pos} />
                         </TableCell>
                         <TableCell>
                           <TierBadge tier={r.tier} />
@@ -538,12 +572,14 @@ export function Draft() {
                   {myRosterQuery.data!.picks.map((p) => (
                     <li key={p.player_id} className="flex items-center justify-between px-4 py-2.5">
                       <div className="flex items-center gap-2">
-                        <span className="w-11 font-mono text-[10px] uppercase text-field-500">
-                          {p.slot ?? p.position}
+                        {/* my-roster rows carry no lineup slot; projected points
+                            are the useful number here. */}
+                        <span className="w-11 tabular font-mono text-[10px] text-field-500">
+                          {fmt1(p.proj_points)}
                         </span>
                         <span className="text-sm text-field-100">{p.name}</span>
                       </div>
-                      <PositionBadge position={p.position} />
+                      <PositionBadge position={p.position ?? "?"} />
                     </li>
                   ))}
                 </ul>
