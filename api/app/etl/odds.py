@@ -126,13 +126,34 @@ def sync_odds() -> int:
     return n
 
 
-def game_lines() -> pd.DataFrame:
-    """Latest cached odds, one row per team with its own implied total & spread."""
+def game_lines(season: int | None = None, week: int | None = None) -> pd.DataFrame:
+    """Latest cached odds, one row per team with its own implied total & spread.
+
+    Books price the whole season well before Week 1, so the cache holds all 272
+    games at once. Pass `season` and `week` to scope to a single slate; without
+    them every week is returned and a team appears once per remaining game.
+    """
     from ..db import read_df
 
+    empty_cols = ["team", "opponent", "spread", "total", "implied_total", "is_home"]
     games = read_df("SELECT * FROM odds_games")
     if games.empty:
-        return pd.DataFrame(columns=["team", "opponent", "spread", "total", "implied_total", "is_home"])
+        return pd.DataFrame(columns=empty_cols)
+
+    if week is not None:
+        # odds_games carries no week; recover it from the schedule. (season,
+        # home_team, away_team) is unique, so this join neither drops nor
+        # duplicates rows.
+        sched = read_df(
+            "SELECT home_team, away_team FROM schedules WHERE season=? AND week=?",
+            (season, week),
+        )
+        if sched.empty:
+            return pd.DataFrame(columns=empty_cols)
+        games = games.merge(sched, on=["home_team", "away_team"], how="inner")
+        if games.empty:
+            return pd.DataFrame(columns=empty_cols)
+
     home = pd.DataFrame({
         "team": games["home_team"], "opponent": games["away_team"],
         "spread": games["spread_home"], "total": games["total"],

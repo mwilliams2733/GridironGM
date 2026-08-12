@@ -163,7 +163,19 @@ export function Draft() {
 
   const runs = boardQuery.data?.runs ?? {};
   const activeRuns = Object.entries(runs).filter(([, count]) => count >= 3);
-  const tierDepth = boardQuery.data?.tier_depth ?? {};
+  // tier_depth is position -> tier -> remaining count. The actionable signal is the
+  // cliff: how many players are left in the best tier still on the board at each
+  // position, which is what the red/amber thresholds below are calibrated against.
+  const tierDepth = Object.entries(boardQuery.data?.tier_depth ?? {}).reduce<
+    Record<string, { tier: number; count: number }>
+  >((acc, [pos, tiers]) => {
+    const best = Object.entries(tiers)
+      .map(([tier, count]) => ({ tier: Number(tier), count: Number(count) }))
+      .filter((t) => Number.isFinite(t.tier) && t.count > 0)
+      .sort((a, b) => a.tier - b.tier)[0];
+    if (best) acc[pos] = best;
+    return acc;
+  }, {});
 
   if (configQuery.isLoading || boardQuery.isLoading) {
     return (
@@ -389,19 +401,20 @@ export function Draft() {
               {Object.keys(tierDepth).length === 0 ? (
                 <p className="text-xs text-field-500">No tier data yet.</p>
               ) : (
-                Object.entries(tierDepth).map(([pos, depth]) => (
+                Object.entries(tierDepth).map(([pos, { tier, count }]) => (
                   <div key={pos} className="flex items-center gap-2">
                     <span className="w-10 font-mono text-xs text-field-400">{pos}</span>
+                    <span className="w-8 font-mono text-[10px] text-field-500">T{tier}</span>
                     <div className="h-2 flex-1 overflow-hidden rounded-full bg-field-800">
                       <div
                         className={cn(
                           "h-full rounded-full",
-                          depth <= 1 ? "bg-crimson-500" : depth <= 3 ? "bg-amber-500" : "bg-hash-500",
+                          count <= 1 ? "bg-crimson-500" : count <= 3 ? "bg-amber-500" : "bg-hash-500",
                         )}
-                        style={{ width: `${Math.min(100, depth * 12)}%` }}
+                        style={{ width: `${Math.min(100, count * 12)}%` }}
                       />
                     </div>
-                    <span className="w-5 text-right font-mono text-xs tabular text-field-300">{depth}</span>
+                    <span className="w-5 text-right font-mono text-xs tabular text-field-300">{count}</span>
                   </div>
                 ))
               )}

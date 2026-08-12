@@ -56,7 +56,10 @@ def get_dashboard() -> dict:
         standings = []
 
     try:
-        odds_board = records(game_lines())
+        # Scope to the same week the lineup is built for, so the board shows one
+        # slate rather than every remaining game of the season.
+        odds_week = optimal_lineup.get("week") or lineup_router._default_week(season)
+        odds_board = records(game_lines(season=season, week=odds_week))
     except Exception as exc:
         log.warning("dashboard: odds failed: %s", exc)
         odds_board = []

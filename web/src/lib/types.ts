@@ -47,11 +47,14 @@ export interface SyncResponse {
 }
 
 export interface SyncStatusResponse {
-  status: SyncStatus | null;
+  /** One entry per sync scope (adp, odds, players, ...), not a single record. */
+  status: SyncStatus[];
 }
 
 export interface SyncStatus {
+  scope: string;
   last_synced?: string | null;
+  detail?: string | null;
   [key: string]: unknown;
 }
 
@@ -86,7 +89,8 @@ export interface VorpRow {
 export interface WaiverRow {
   player_id: string;
   name: string;
-  position: string;
+  /** Waiver rows abbreviate this as `pos`, unlike Player/VorpRow's `position`. */
+  pos: string;
   team?: string | null;
   faab_bid: Num;
   confidence: "High" | "Medium" | "Low" | string;
@@ -103,7 +107,7 @@ export interface RosterResponse {
   team: {
     team_id?: string | number | null;
     name?: string | null;
-    players?: Player[];
+    roster?: Player[];
     [key: string]: unknown;
   } | null;
 }
@@ -136,7 +140,8 @@ export interface DraftBoardResponse {
   current_pick: number;
   my_next_pick: number | null;
   runs: Record<string, number>;
-  tier_depth: Record<string, number>;
+  /** position -> tier -> count of undrafted players remaining in that tier. */
+  tier_depth: Record<string, Record<string, number>>;
   [key: string]: unknown;
 }
 
@@ -160,26 +165,38 @@ export interface DraftMyRosterResponse {
 
 // --- waivers.py ------------------------------------------------------------
 
-export type WaiverRankingsResponse = WaiverRow[];
+export interface WaiverRankingsResponse {
+  rankings: WaiverRow[];
+  warning?: string | null;
+}
 
 // --- lineup.py ------------------------------------------------------------
 
+export interface LineupPlayer extends Player {
+  opponent?: string | null;
+  proj_points: Num;
+  floor?: Num;
+  ceiling?: Num;
+  confidence?: string | null;
+}
+
 export interface LineupSlot {
   slot: string;
-  player: (Player & { proj?: Num; confidence?: string | null }) | null;
+  player: LineupPlayer | null;
 }
 
 export interface CloseCall {
   slot: string;
   starter: string;
-  alternative: string;
+  alt: string;
+  alt_proj?: Num;
   margin: Num;
   [key: string]: unknown;
 }
 
 export interface LineupResult {
   starters: LineupSlot[];
-  bench: (Player & { proj?: Num })[];
+  bench: LineupPlayer[];
   current_total: Num;
   optimal_total: Num;
   delta: Num;
@@ -190,12 +207,24 @@ export interface LineupResult {
 
 // --- dashboard.py ------------------------------------------------------------
 
+/** One row per team per game — 2 rows per matchup, not one row per game. */
+export interface OddsRow {
+  team: string;
+  opponent: string;
+  spread: Num;
+  total: Num;
+  implied_total: Num;
+  is_home: boolean;
+  [key: string]: unknown;
+}
+
 export interface DashboardResponse {
-  my_team: RosterResponse["team"] | null;
+  /** The full roster envelope (mode + team), not just the team. */
+  my_team: RosterResponse | null;
   optimal_lineup: Partial<LineupResult> | null;
   top_waivers: WaiverRow[];
   standings: Record<string, unknown>[];
-  odds_board: Record<string, unknown>[];
-  sync_status: SyncStatus | null;
+  odds_board: OddsRow[];
+  sync_status: SyncStatus[];
   warning?: string | null;
 }

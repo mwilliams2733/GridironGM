@@ -60,23 +60,21 @@ export function Dashboard() {
   }
 
   const data = dashboardQuery.data!;
-  const hasTeam = data.my_team && (data.my_team.players?.length ?? 0) > 0;
+  const roster = data.my_team?.team?.roster ?? [];
+  const hasTeam = roster.length > 0;
   const optimal = data.optimal_lineup;
   const waivers = data.top_waivers ?? [];
   const standings = data.standings ?? [];
   const oddsBoard = data.odds_board ?? [];
 
+  // odds_board is already one row per team (2 per matchup), so map rather than flatMap.
   const chartData = oddsBoard
-    .flatMap((g) => {
-      const home = str(g.home_team ?? g.home);
-      const away = str(g.away_team ?? g.away);
-      const homeTotal = num(g.home_implied_total ?? g.home_implied);
-      const awayTotal = num(g.away_implied_total ?? g.away_implied);
-      const rows: { label: string; total: number }[] = [];
-      if (home && homeTotal !== null) rows.push({ label: home, total: homeTotal });
-      if (away && awayTotal !== null) rows.push({ label: away, total: awayTotal });
-      return rows;
+    .map((g) => {
+      const label = str(g.team);
+      const total = num(g.implied_total);
+      return label && total !== null ? { label, total } : null;
     })
+    .filter((r): r is { label: string; total: number } => r !== null)
     .sort((a, b) => b.total - a.total)
     .slice(0, 16);
 
@@ -107,8 +105,8 @@ export function Dashboard() {
         />
         <StatTile
           label="Roster Mode"
-          value={data.my_team ? "Linked" : "None"}
-          sub={hasTeam ? `${data.my_team?.players?.length ?? 0} players` : "Connect a roster"}
+          value={!hasTeam ? "None" : data.my_team?.mode === "espn" ? "Linked" : "Manual"}
+          sub={hasTeam ? `${roster.length} players` : "Connect a roster"}
         />
       </div>
 
@@ -181,7 +179,7 @@ export function Dashboard() {
                 {waivers.slice(0, 5).map((w) => (
                   <li key={w.player_id} className="flex items-center justify-between gap-2 px-4 py-3">
                     <div className="flex items-center gap-2">
-                      <PositionBadge position={w.position} />
+                      <PositionBadge position={w.pos} />
                       <div>
                         <div className="text-sm font-medium text-field-100">{w.name}</div>
                         <div className="text-xs text-field-500">{w.team ?? "FA"}</div>
@@ -224,7 +222,7 @@ export function Dashboard() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {(data.my_team?.players ?? []).map((p) => (
+                  {roster.map((p) => (
                     <TableRow key={p.player_id}>
                       <TableCell className="font-medium text-field-100">{p.name}</TableCell>
                       <TableCell>

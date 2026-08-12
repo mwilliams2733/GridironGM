@@ -282,7 +282,7 @@ export function Lineup() {
                       </div>
                       <div className="flex flex-col items-end gap-1">
                         <span className="tabular text-sm font-semibold text-field-100">
-                          {fmt1(s.player?.proj)}
+                          {fmt1(s.player?.proj_points)}
                         </span>
                         <ConfidenceBar level={s.player?.confidence} />
                       </div>
@@ -306,7 +306,7 @@ export function Lineup() {
                       >
                         <PositionBadge position={p.position} />
                         <span className="text-sm text-field-200">{p.name}</span>
-                        <span className="tabular text-xs text-field-500">{fmt1(p.proj)}</span>
+                        <span className="tabular text-xs text-field-500">{fmt1(p.proj_points)}</span>
                       </div>
                     ))
                   )}
@@ -329,7 +329,7 @@ export function Lineup() {
                         {c.slot}
                       </div>
                       <div className="mt-1 text-sm text-field-200">
-                        {c.starter} <span className="text-field-500">over</span> {c.alternative}
+                        {c.starter} <span className="text-field-500">over</span> {c.alt}
                       </div>
                       <div className="mt-0.5 tabular text-xs text-field-400">
                         margin {fmt1(c.margin)} pts

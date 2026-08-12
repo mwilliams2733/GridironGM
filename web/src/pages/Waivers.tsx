@@ -22,7 +22,7 @@ export function Waivers() {
     queryFn: () => api.waivers.rankings(weekParam),
   });
 
-  const rows = rankingsQuery.data ?? [];
+  const rows = rankingsQuery.data?.rankings ?? [];
   const weekOptions = useMemo(() => ["current", ...Array.from({ length: 18 }, (_, i) => String(i + 1))], []);
 
   return (
@@ -90,7 +90,7 @@ export function Waivers() {
                           <span className="ml-2 text-xs text-field-500">{r.team ?? "FA"}</span>
                         </TableCell>
                         <TableCell>
-                          <PositionBadge position={r.position} />
+                          <PositionBadge position={r.pos} />
                         </TableCell>
                         <TableCell className="tabular font-mono text-hash-500">
                           ${r.faab_bid ?? 0}

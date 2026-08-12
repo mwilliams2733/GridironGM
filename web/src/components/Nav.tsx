@@ -44,7 +44,11 @@ export function Nav() {
     },
   });
 
-  const lastSynced = statusQuery.data?.status?.last_synced as string | undefined;
+  // /sync/status returns one entry per scope; the header shows the most recent of them.
+  const lastSynced = (statusQuery.data?.status ?? []).reduce<string | undefined>((latest, s) => {
+    if (!s.last_synced) return latest;
+    return !latest || s.last_synced > latest ? s.last_synced : latest;
+  }, undefined);
 
   return (
     <header className="sticky top-0 z-40 border-b border-field-700 bg-field-950/95 backdrop-blur">
