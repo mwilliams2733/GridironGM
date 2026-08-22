@@ -123,15 +123,20 @@ _WEEKLY_RAW_COLUMNS = (
 )
 
 
-@lru_cache(maxsize=4)
-def _weekly_raw(season: int) -> pd.DataFrame:
-    """Raw regular-season stat lines for the seasons feeding ``season``.
+@lru_cache(maxsize=8)
+def _weekly_rows(seasons: tuple[int, ...]) -> pd.DataFrame:
+    """Raw regular-season stat lines for exactly ``seasons``.
 
-    Cached on season alone, NOT on league: the stat line is the same for
-    everyone, only the scoring differs. Scoring is applied by `_weekly`, which
-    is cheap enough (a vectorized pass over ~18k rows) not to need its own cache.
+    Cached on the season tuple alone, NOT on league: the stat line is the same
+    for everyone, only the scoring differs. Scoring is applied by `_weekly`,
+    which is cheap enough (a vectorized pass over ~18k rows) not to need its
+    own cache. Two different callers need two different season sets -- see
+    `_weekly_raw` (feeder seasons for a season projection) vs. `dvp_factors`/
+    `_recent_form` (the season actually being played) -- so this takes the
+    tuple explicitly rather than deriving it itself.
     """
-    seasons = _completed_seasons(season)
+    if not seasons:
+        return read_df(f"SELECT {', '.join(_WEEKLY_RAW_COLUMNS)} FROM weekly_stats WHERE 0")
     q = (
         f"SELECT {', '.join(_WEEKLY_RAW_COLUMNS)} "
         f"FROM weekly_stats WHERE season IN ({','.join('?' for _ in seasons)}) "
@@ -140,15 +145,32 @@ def _weekly_raw(season: int) -> pd.DataFrame:
     return read_df(q, tuple(seasons))
 
 
-def _weekly(season: int, cfg: dict | None = None) -> pd.DataFrame:
-    """Weekly stat lines with an `fp` column scored for ``cfg``'s league."""
+def _weekly_raw(season: int) -> pd.DataFrame:
+    """Raw stat lines for the completed seasons FEEDING a projection for ``season``.
+
+    Deliberately excludes ``season`` itself (see `_completed_seasons`) -- this
+    is what `project_season`'s per-player history aggregates consume. Callers
+    that need the season actually being played (`dvp_factors`, `_recent_form`)
+    must call `_weekly_rows` directly with their own season tuple instead.
+    """
+    return _weekly_rows(_completed_seasons(season))
+
+
+def _score_weekly(df: pd.DataFrame, cfg: dict | None) -> pd.DataFrame:
+    """Attach an `fp` column scored for ``cfg``'s league to a raw stat frame."""
     from ..scoring import score_frame
 
-    df = _weekly_raw(season).copy()
+    df = df.copy()
     if df.empty:
         return df
     df["fp"] = score_frame(df, cfg)
     return df
+
+
+def _weekly(season: int, cfg: dict | None = None) -> pd.DataFrame:
+    """Weekly stat lines (feeder seasons for ``season``) with an `fp` column
+    scored for ``cfg``'s league. Used by `project_season`'s history aggregates."""
+    return _score_weekly(_weekly_raw(season), cfg)
 
 
 @lru_cache(maxsize=1)
@@ -300,7 +322,7 @@ def project_season(season: int, store: bool = False, cfg: dict | None = None) ->
     position, team, proj_points, floor, ceiling, components (dict)."""
     if cfg is None:
         cfg = league_config()
-    wk = _weekly(season, cfg).copy()
+    wk = _weekly(season, cfg)
     if wk.empty:
         return pd.DataFrame()
     newest = max(_completed_seasons(season))
@@ -479,9 +501,12 @@ def dvp_factors(season: int, upto_week: int, cfg: dict | None = None) -> dict:
     prior season. Returns {(team, pos): factor}. Neutral (missing key -> 1.0).
 
     Computed from the scored frame rather than SQL so it reflects the league's
-    own scoring; the underlying read is cached by `_weekly_raw`.
+    own scoring. Needs the season actually being played PLUS the prior season
+    (for the low-sample-size fallback below) -- neither is `_weekly_raw`'s
+    feeder-season set, so this reads `_weekly_rows` directly rather than going
+    through `_weekly`/`_weekly_raw`, which deliberately excludes ``season``.
     """
-    wk = _weekly(season, cfg)
+    wk = _score_weekly(_weekly_rows((season, season - 1)), cfg)
     if wk.empty:
         return {}
 
@@ -516,9 +541,14 @@ def _injury_status(season: int, week: int) -> dict[str, str]:
 
 
 def _recent_form(season: int, week: int, cfg: dict | None = None) -> pd.Series:
-    """Mean fp over the prior WEEK_FORM_LOOKBACK games this season, per player."""
+    """Mean fp over the prior WEEK_FORM_LOOKBACK games this season, per player.
+
+    Needs the season actually being played, not `_weekly_raw`'s feeder-season
+    set (which deliberately excludes ``season``), so this reads `_weekly_rows`
+    directly rather than going through `_weekly`.
+    """
     lo = max(1, week - WEEK_FORM_LOOKBACK)
-    wk = _weekly(season, cfg)
+    wk = _score_weekly(_weekly_rows((season,)), cfg)
     if wk.empty:
         return pd.Series(dtype=float)
     sub = wk[(wk.season == season) & (wk.week >= lo) & (wk.week < week)]
