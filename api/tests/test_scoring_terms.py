@@ -37,7 +37,18 @@ def test_all_three_fumble_columns_share_the_fumble_value():
 
 def test_score_frame_agrees_with_score_offense_row_for_row():
     """The invariant the bulk path depends on. Derive, don't duplicate."""
-    df = pd.DataFrame([STATS, {**STATS, "receptions": 9, "passing_tds": 0}])
+    df = pd.DataFrame([
+        STATS,
+        {**STATS, "receptions": 9, "passing_tds": 0},
+        # passing_yards=311 -> 311/25=12.44, a genuine 2nd decimal digit.
+        # Every other row here is a round number (310/25=12.40, 41/10=4.10,
+        # 52/10=5.20, ...), so a regression that rounds score_frame to only
+        # 1 decimal place (e.g. .round(1) instead of .round(2)) is invisible
+        # on those rows: 37.7 == 37.7 either way. This row is what actually
+        # exercises the 2-decimal-place equivalence — don't "simplify" it
+        # back to a round number.
+        {**STATS, "passing_yards": 311},
+    ])
     bulk = score_frame(df)
     for i in range(len(df)):
         assert bulk.iloc[i] == score_offense(df.iloc[i].to_dict())
