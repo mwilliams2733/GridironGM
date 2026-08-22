@@ -16,13 +16,13 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
-from pathlib import Path
 
 import httpx
 import pandas as pd
 
 from ..config import PARQUET_DIR, ensure_dirs, league_cache_dir, league_config, resolve_league
 from ..db import mark_synced
+from ..models.projections import norm_team
 
 log = logging.getLogger(__name__)
 
@@ -56,15 +56,18 @@ def sleeper_player_map() -> dict:
     path = PARQUET_DIR / "sleeper_players.parquet"
     try:
         data = _get("players/nfl")
-        pd.DataFrame([{"player_id": k, "blob": json.dumps(v)}
-                      for k, v in data.items()]).to_parquet(path, index=False)
-        return data
-    except Exception as exc:
+    except httpx.HTTPError as exc:
+        # Only a genuine network/transport failure falls back to the cache. A
+        # successfully-fetched-but-malformed payload must NOT land here: that
+        # would silently mask a real Sleeper schema change as "offline".
         if path.exists():
             log.warning("sleeper player map fetch failed (%s); using cache", exc)
             df = pd.read_parquet(path)
             return {r.player_id: json.loads(r.blob) for r in df.itertuples()}
         raise
+    pd.DataFrame([{"player_id": k, "blob": json.dumps(v)}
+                  for k, v in data.items()]).to_parquet(path, index=False)
+    return data
 
 
 def resolve_sleeper_player(entry: dict, players: pd.DataFrame,
@@ -79,7 +82,11 @@ def resolve_sleeper_player(entry: dict, players: pd.DataFrame,
     pos = SLEEPER_POS.get(entry.get("position"), entry.get("position"))
     if pos == "DST":
         team = entry.get("player_id") or entry.get("team")
-        return f"DST_{team}" if team else None
+        # Sleeper spells the Rams "LAR"; the rest of the app canonicalizes to
+        # "LA" (schedules/weekly_stats/odds convention). Route through the
+        # same norm_team the rest of the app uses rather than adding a
+        # second, Sleeper-specific team-code table that can drift from it.
+        return f"DST_{norm_team(team)}" if team else None
 
     gsis = entry.get("gsis_id")
     if gsis and gsis in set(players.player_id):
@@ -108,7 +115,13 @@ def _espn_lut(players: pd.DataFrame) -> dict:
 
 
 def parse_roster(raw: dict, player_map: dict, players: pd.DataFrame) -> dict:
-    """One Sleeper roster -> {roster_id, players, starters, faab_used, unresolved}."""
+    """One Sleeper roster -> {roster_id, players, starters, faab_used, unresolved}.
+
+    `players` holds resolved app player_ids; `unresolved` holds the raw Sleeper
+    ids that the cascade could not place. The full roster is the union of the
+    two -- `len(players)` alone undercounts whenever anything failed to
+    resolve.
+    """
     lut = _espn_lut(players)
 
     def resolve(pid):

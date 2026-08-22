@@ -50,6 +50,46 @@ def test_team_defenses_map_to_synthetic_dst_ids():
         {"player_id": "HOU", "position": "DEF"}, _fake_players(), {}) == "DST_HOU"
 
 
+def test_team_defense_team_code_is_normalized_before_building_the_id():
+    """Sleeper spells the Rams "LAR"; the rest of the app canonicalizes to
+    "LA" (schedules/weekly_stats/odds convention -- see TEAM_NORM in
+    models/projections.py). Building the id from the raw Sleeper code would
+    silently create a DST that joins nothing downstream."""
+    assert resolve_sleeper_player(
+        {"player_id": "LAR", "position": "DEF"}, _fake_players(), {}) == "DST_LA"
+
+
+def test_resolved_dst_ids_exist_in_the_projection_universe():
+    """Non-None is not the bar: a resolved DST id must actually be a row in
+    project_season's output, or the team's defense silently joins nothing --
+    no projection, no scoring, no lineup slot. This is the check that would
+    have caught the LAR/DST_LAR-vs-DST_LA mismatch; asserting non-None alone
+    did not.
+
+    No network: Sleeper's DEF entries are keyed by the bare team abbreviation
+    (see resolve_sleeper_player), so a stub player_map with just {"position":
+    "DEF"} for each team code in the fixture reproduces the real lookup shape
+    without calling sleeper_player_map()."""
+    from app.config import current_season
+    from app.models.projections import project_season
+    from app.routers._common import all_players
+
+    rosters = _rosters()
+    players = all_players()
+    team_codes = {pid for r in rosters for pid in (r.get("players") or []) if pid.isalpha()}
+    player_map = {code: {"position": "DEF"} for code in team_codes}
+    universe = set(project_season(current_season())["player_id"])
+
+    dst_ids = set()
+    for raw in rosters:
+        parsed = parse_roster(raw, player_map, players)
+        dst_ids |= {pid for pid in parsed["players"] if pid.startswith("DST_")}
+
+    assert dst_ids, "fixture should carry at least one team defense"
+    missing = dst_ids - universe
+    assert not missing, f"DST ids not in the projection universe: {missing}"
+
+
 def test_an_unresolvable_entry_returns_none_rather_than_guessing():
     entry = {"gsis_id": None, "full_name": "Nobody Atallhere", "position": "WR"}
     assert resolve_sleeper_player(entry, _fake_players(), {}) is None
