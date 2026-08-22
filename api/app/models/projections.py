@@ -110,18 +110,45 @@ def _completed_seasons(season: int) -> tuple[int, ...]:
     return tuple(season - i for i in range(1, n + 1))
 
 
+# Raw stat columns pulled for scoring. League-agnostic — every league scores the
+# same underlying stat line through its own term table.
+_WEEKLY_RAW_COLUMNS = (
+    "season", "week", "player_id", "team", "opponent", "position",
+    "carries", "targets", "receptions", "attempts",
+    "passing_yards", "passing_tds", "interceptions", "passing_2pt_conversions",
+    "rushing_yards", "rushing_tds", "rushing_2pt_conversions",
+    "receiving_yards", "receiving_tds", "receiving_2pt_conversions",
+    "rushing_fumbles_lost", "receiving_fumbles_lost", "sack_fumbles_lost",
+    "special_teams_tds",
+)
+
+
 @lru_cache(maxsize=4)
-def _weekly(season: int) -> pd.DataFrame:
-    """All regular-season weekly stat lines for the 3 seasons feeding ``season``."""
+def _weekly_raw(season: int) -> pd.DataFrame:
+    """Raw regular-season stat lines for the seasons feeding ``season``.
+
+    Cached on season alone, NOT on league: the stat line is the same for
+    everyone, only the scoring differs. Scoring is applied by `_weekly`, which
+    is cheap enough (a vectorized pass over ~18k rows) not to need its own cache.
+    """
     seasons = _completed_seasons(season)
     q = (
-        "SELECT season, week, player_id, team, opponent, position, "
-        "carries, targets, receptions, attempts, "
-        "fantasy_points_half_ppr AS fp "
+        f"SELECT {', '.join(_WEEKLY_RAW_COLUMNS)} "
         f"FROM weekly_stats WHERE season IN ({','.join('?' for _ in seasons)}) "
         f"AND week <= {REG_SEASON_WEEKS}"
     )
     return read_df(q, tuple(seasons))
+
+
+def _weekly(season: int, cfg: dict | None = None) -> pd.DataFrame:
+    """Weekly stat lines with an `fp` column scored for ``cfg``'s league."""
+    from ..scoring import score_frame
+
+    df = _weekly_raw(season).copy()
+    if df.empty:
+        return df
+    df["fp"] = score_frame(df, cfg)
+    return df
 
 
 @lru_cache(maxsize=1)
@@ -267,11 +294,13 @@ def _birth_year(birthdate) -> int | None:
         return None
 
 
-def project_season(season: int, store: bool = False) -> pd.DataFrame:
-    """Full-season half-PPR projections for every offensive player with history,
-    plus anchored K/DST models. Columns: player_id, name, position, team,
-    proj_points, floor, ceiling, components (dict)."""
-    wk = _weekly(season).copy()
+def project_season(season: int, store: bool = False, cfg: dict | None = None) -> pd.DataFrame:
+    """Full-season projections (scored per ``cfg``'s league) for every offensive
+    player with history, plus anchored K/DST models. Columns: player_id, name,
+    position, team, proj_points, floor, ceiling, components (dict)."""
+    if cfg is None:
+        cfg = league_config()
+    wk = _weekly(season, cfg).copy()
     if wk.empty:
         return pd.DataFrame()
     newest = max(_completed_seasons(season))
@@ -441,29 +470,34 @@ def _resolve_k_id(name: str, team: str, players: pd.DataFrame) -> str:
 # ---------------------------------------------------------------------------
 # Weekly projection
 # ---------------------------------------------------------------------------
-@lru_cache(maxsize=8)
-def dvp_factors(season: int, upto_week: int) -> dict:
+def dvp_factors(season: int, upto_week: int, cfg: dict | None = None) -> dict:
     """Opponent defense-vs-position multipliers.
 
-    For each (defense_team, position): mean fantasy points allowed to that position
-    per game, divided by the league average, clipped to DVP_CLIP. Uses the current
-    season up to ``upto_week`` if >=4 weeks of data exist, else the prior season.
-    Returns {(team, pos): factor}. Neutral (missing key -> 1.0)."""
+    For each (defense_team, position): mean fantasy points allowed to that
+    position per game, divided by the league average, clipped to DVP_CLIP. Uses
+    the current season up to ``upto_week`` if >=4 weeks of data exist, else the
+    prior season. Returns {(team, pos): factor}. Neutral (missing key -> 1.0).
+
+    Computed from the scored frame rather than SQL so it reflects the league's
+    own scoring; the underlying read is cached by `_weekly_raw`.
+    """
+    wk = _weekly(season, cfg)
+    if wk.empty:
+        return {}
+
     def compute(sea: int, wk_max: int) -> pd.DataFrame:
-        q = (
-            "SELECT opponent, position, week, SUM(fantasy_points_half_ppr) s "
-            "FROM weekly_stats WHERE season=? AND week<? AND week<=? "
-            "GROUP BY opponent, position, week"
-        )
-        return read_df(q, (sea, wk_max, REG_SEASON_WEEKS))
+        sub = wk[(wk.season == sea) & (wk.week < wk_max) & (wk.week <= REG_SEASON_WEEKS)]
+        if sub.empty:
+            return sub
+        return sub.groupby(["opponent", "position", "week"], as_index=False)["fp"].sum()
 
     per_game = compute(season, upto_week)
-    if per_game.week.nunique() < 4:
+    if per_game.empty or per_game.week.nunique() < 4:
         per_game = compute(season - 1, REG_SEASON_WEEKS + 1)
     if per_game.empty:
         return {}
-    team_pos = per_game.groupby(["opponent", "position"]).s.mean()
-    league = per_game.groupby("position").s.mean()
+    team_pos = per_game.groupby(["opponent", "position"])["fp"].mean()
+    league = per_game.groupby("position")["fp"].mean()
     out = {}
     for (team, pos), val in team_pos.items():
         lg = league.get(pos, val)
@@ -481,15 +515,16 @@ def _injury_status(season: int, week: int) -> dict[str, str]:
             if r.report_status in INJURY_MULT}
 
 
-def _recent_form(season: int, week: int) -> pd.Series:
+def _recent_form(season: int, week: int, cfg: dict | None = None) -> pd.Series:
     """Mean fp over the prior WEEK_FORM_LOOKBACK games this season, per player."""
     lo = max(1, week - WEEK_FORM_LOOKBACK)
-    q = (
-        "SELECT player_id, AVG(fantasy_points_half_ppr) f FROM weekly_stats "
-        "WHERE season=? AND week>=? AND week<? GROUP BY player_id"
-    )
-    df = read_df(q, (season, lo, week))
-    return df.set_index("player_id")["f"] if not df.empty else pd.Series(dtype=float)
+    wk = _weekly(season, cfg)
+    if wk.empty:
+        return pd.Series(dtype=float)
+    sub = wk[(wk.season == season) & (wk.week >= lo) & (wk.week < week)]
+    if sub.empty:
+        return pd.Series(dtype=float)
+    return sub.groupby("player_id")["fp"].mean()
 
 
 def _odds_by_team(season: int, week: int) -> dict[str, dict]:
@@ -571,19 +606,22 @@ def _matchup_factor(pos: str, opp: str, is_home: bool,
 
 
 def project_week(season: int, week: int, store: bool = False,
-                 season_proj: pd.DataFrame | None = None) -> pd.DataFrame:
+                 season_proj: pd.DataFrame | None = None,
+                 cfg: dict | None = None) -> pd.DataFrame:
     """Matchup-adjusted single-week projections. Columns: player_id, name, position,
     team, opponent, proj_points, floor, ceiling, components."""
+    if cfg is None:
+        cfg = league_config()
     if season_proj is None:
-        season_proj = project_season(season)
+        season_proj = project_season(season, cfg=cfg)
     if season_proj.empty:
         return pd.DataFrame()
 
     sched = _schedule_opponents(season, week)
-    dvp = dvp_factors(season, week)
+    dvp = dvp_factors(season, week, cfg)
     injuries = _injury_status(season, week)
     odds = _odds_by_team(season, week)
-    form = _recent_form(season, week)
+    form = _recent_form(season, week, cfg)
 
     # league average implied for game-environment scaling
     avg_imp = (np.mean([o["implied_total"] for o in odds.values()])
@@ -630,7 +668,8 @@ def project_week(season: int, week: int, store: bool = False,
 # Rest-of-season projection
 # ---------------------------------------------------------------------------
 def project_ros(season: int, week: int, store: bool = False,
-                season_proj: pd.DataFrame | None = None) -> pd.DataFrame:
+                season_proj: pd.DataFrame | None = None,
+                cfg: dict | None = None) -> pd.DataFrame:
     """Remaining-schedule aggregate (weeks ``week``..18).
 
     Walks each remaining week individually, applying the full shared matchup chain
@@ -650,11 +689,13 @@ def project_ros(season: int, week: int, store: bool = False,
     Columns: player_id, name, position, team, games_left, proj_points, floor,
     ceiling, components.
     """
+    if cfg is None:
+        cfg = league_config()
     if season_proj is None:
-        season_proj = project_season(season)
+        season_proj = project_season(season, cfg=cfg)
     if season_proj.empty:
         return pd.DataFrame()
-    dvp = dvp_factors(season, week)
+    dvp = dvp_factors(season, week, cfg)
     weeks = range(max(week, 1), REG_SEASON_WEEKS + 1)
 
     # Per-week context, built once. Each week normalises its implied totals against
