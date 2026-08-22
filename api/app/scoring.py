@@ -79,8 +79,8 @@ def profile_key(cfg: dict | None = None) -> str:
     return hashlib.sha256(blob).hexdigest()[:12]
 
 
-def score_kicker(stats: Mapping) -> float:
-    k = league_config()["scoring"]["kicking"]
+def score_kicker(stats: Mapping, cfg: dict | None = None) -> float:
+    k = (cfg or league_config())["scoring"]["kicking"]
     pts = 0.0
     pts += _num(stats, "fg_made_0_19") * k["fg_0_39"]
     pts += _num(stats, "fg_made_20_29") * k["fg_0_39"]
@@ -94,21 +94,27 @@ def score_kicker(stats: Mapping) -> float:
     return round(pts, 2)
 
 
-def score_dst(stats: Mapping) -> float:
-    d = league_config()["scoring"]["dst"]
+def score_dst(stats: Mapping, cfg: dict | None = None) -> float:
+    """Score a team-defense row. Keys follow the `team_defense` table columns
+    (see `etl.nfl_data.DEFENSE_INPUT_COLUMNS`) -- NOT generic names -- so this
+    scores real ingested rows, not a hypothetical shape."""
+    cfg = cfg or league_config()
+    d = cfg["scoring"]["dst"]
     pts = 0.0
-    pts += _num(stats, "sacks") * d["sack"]
-    pts += _num(stats, "interceptions") * d["interception"]
-    pts += _num(stats, "fumble_recoveries") * d["fumble_recovery"]
-    pts += _num(stats, "touchdowns") * d["touchdown"]
-    pts += _num(stats, "safeties") * d["safety"]
-    pts += _num(stats, "blocked_kicks") * d["block_kick"]
-    pts += points_allowed_score(_num(stats, "points_allowed"))
+    pts += _num(stats, "def_sacks") * d["sack"]
+    pts += _num(stats, "def_interceptions") * d["interception"]
+    pts += _num(stats, "fumble_recovery_opp") * d["fumble_recovery"]
+    pts += (_num(stats, "def_tds") + _num(stats, "special_teams_tds")) * d["touchdown"]
+    pts += _num(stats, "def_safeties") * d["safety"]
+    pts += (
+        _num(stats, "def_punt_blocks") + _num(stats, "def_pat_blocks") + _num(stats, "def_fg_blocks")
+    ) * d["block_kick"]
+    pts += points_allowed_score(_num(stats, "points_allowed"), cfg)
     return round(pts, 2)
 
 
-def points_allowed_score(points_allowed: float) -> float:
-    tiers = league_config()["scoring"]["dst"]["points_allowed_tiers"]
+def points_allowed_score(points_allowed: float, cfg: dict | None = None) -> float:
+    tiers = (cfg or league_config())["scoring"]["dst"]["points_allowed_tiers"]
     for max_allowed, fantasy_pts in tiers:
         if points_allowed <= max_allowed:
             return float(fantasy_pts)

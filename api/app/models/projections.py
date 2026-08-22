@@ -93,12 +93,6 @@ AGE_CURVES = {
     "QB": {23: 0.95, 25: 1.00, 34: 1.00, 35: 0.98, 36: 0.95, 37: 0.90, 39: 0.80},
 }
 
-# Kicker / DST anchored models (no weekly_stats for these positions).
-K_BASE_PPG = 8.0                 # ~ mean fantasy points/game for a startable kicker
-K_IMPLIED_GAIN = 0.45            # kicker ppg sensitivity to team implied total vs league avg
-DST_BASE_PPG = 7.0               # ~ mean DST fantasy points/game
-DST_IMPLIED_GAIN = 0.55          # DST sensitivity to (inverted) opponent implied total
-
 
 # ---------------------------------------------------------------------------
 # Data access
@@ -243,11 +237,17 @@ def age_multiplier(position: str, age: float | None) -> float:
     return _interp_curve(AGE_CURVES[position], age)
 
 
-def _weight_seasons(per_season: pd.DataFrame, newest: int) -> dict:
+def _weight_seasons(per_season: pd.DataFrame, newest: int, trend: bool = True) -> dict:
     """Recency- and reliability-weighted aggregation of a player's seasons.
 
     ``per_season`` columns: season, games, ppg, opp_pg (opportunities/game).
     Returns base_ppg, proj_games, usage_trend, and pooled dispersion inputs.
+
+    ``trend=False`` skips the usage-trend computation and pins it at 1.0.
+    Kickers and DSTs have no meaningful "opportunity" concept -- setting
+    opp_pg equal to ppg does NOT make the ratio inert (a team/kicker whose
+    ppg genuinely varies year to year still yields a non-1.0 ratio), so
+    those callers pass trend=False rather than relying on a degenerate input.
     """
     if per_season.empty:
         return {"base_ppg": 0.0, "proj_games": 0.0, "usage_trend": 1.0, "n_seasons": 0}
@@ -277,7 +277,7 @@ def _weight_seasons(per_season: pd.DataFrame, newest: int) -> dict:
 
     # Usage trend: most-recent season opp/g vs weighted mean of earlier seasons.
     usage_trend = 1.0
-    if newest in per_season.index and len(per_season) >= 2:
+    if trend and newest in per_season.index and len(per_season) >= 2:
         recent = per_season.loc[newest, "opp_pg"]
         prior = per_season.drop(index=newest)["opp_pg"]
         prior_mean = float(prior.mean())
@@ -394,7 +394,7 @@ def project_season(season: int, store: bool = False, cfg: dict | None = None) ->
         })
 
     df = pd.DataFrame(rows)
-    kdst = _project_k_dst_season(season)
+    kdst = _project_k_dst_season(season, cfg)
     if not kdst.empty:
         df = pd.concat([df, kdst], ignore_index=True)
     df = df.sort_values("proj_points", ascending=False).reset_index(drop=True)
@@ -404,89 +404,95 @@ def project_season(season: int, store: bool = False, cfg: dict | None = None) ->
 
 
 # ---------------------------------------------------------------------------
-# Kicker / DST anchored season models
+# Kicker / DST history-driven season models
 # ---------------------------------------------------------------------------
-def _team_implied_totals() -> dict[str, float]:
-    """team -> mean implied total from cached odds (empty dict if no odds)."""
-    from ..etl.odds import game_lines
-    gl = game_lines()
-    if gl.empty:
-        return {}
-    return gl.groupby("team")["implied_total"].mean().to_dict()
+def _dst_per_season(df: pd.DataFrame, cfg: dict | None = None) -> pd.DataFrame:
+    """Per (team, season) games and points-per-game for a team defense.
 
-
-def _opp_implied_totals(season: int) -> dict[str, float]:
-    """team -> mean implied total of its opponents across the season schedule.
-
-    Uses cached odds where available; falls back to league average so DST always
-    gets a number. Simplified: averages every scheduled opponent's team implied
-    total (from odds), else LEAGUE_AVG_IMPLIED."""
-    it = _team_implied_totals()
-    sch = read_df(
-        "SELECT week, home_team, away_team FROM schedules WHERE season=? AND week<=?",
-        (season, REG_SEASON_WEEKS),
-    )
-    if sch.empty:
-        return {}
-    opp_tot: dict[str, list[float]] = {}
-    for _, r in sch.iterrows():
-        opp_tot.setdefault(r.home_team, []).append(it.get(r.away_team, LEAGUE_AVG_IMPLIED))
-        opp_tot.setdefault(r.away_team, []).append(it.get(r.home_team, LEAGUE_AVG_IMPLIED))
-    return {t: float(np.mean(v)) for t, v in opp_tot.items()}
-
-
-def _project_k_dst_season(season: int) -> pd.DataFrame:
-    """K and DST projections from Vegas implied totals.
-
-    Kickers: ppg scales with the team's own implied total. DST: ppg scales with the
-    INVERSE of opponents' implied totals (weaker offenses faced => more DST points).
-    Both are simple, documented models because these positions have no weekly_stats.
-
-    NOTE: the ADP table supplies only the *universe* (which kickers/defenses exist and
-    their teams). ``adp`` is echoed into components for display but is NOT an input to
-    the projection -- see docs/MODELING.md 4 and 10.6.
+    Points-allowed is tiered, not linear, so it cannot ride the term table and
+    is scored per row by `score_dst`.
     """
-    adp = read_df("SELECT player_name, position, team, adp FROM adp WHERE position IN ('PK','DST')")
-    if adp.empty:
-        return pd.DataFrame()
-    team_it = _team_implied_totals()
-    opp_it = _opp_implied_totals(season)
-    players = _players()
+    from ..scoring import score_dst
+
+    if df.empty:
+        return pd.DataFrame(columns=["team", "season", "games", "ppg", "opp_pg"])
+    scored = df.copy()
+    scored["pts"] = [score_dst(r, cfg) for r in df.to_dict("records")]
+    out = scored.groupby(["team", "season"], as_index=False).agg(
+        games=("pts", "size"), ppg=("pts", "mean"))
+    out["opp_pg"] = out["ppg"]      # no usage concept for a defense
+    return out
+
+
+def _kicker_per_season(df: pd.DataFrame, cfg: dict | None = None) -> pd.DataFrame:
+    """Per (player, season) games and points-per-game for a kicker."""
+    from ..scoring import score_kicker
+
+    if df.empty:
+        return pd.DataFrame(columns=["player_id", "season", "games", "ppg", "opp_pg"])
+    scored = df.copy()
+    scored["pts"] = [score_kicker(r, cfg) for r in df.to_dict("records")]
+    out = scored.groupby(["player_id", "season"], as_index=False).agg(
+        games=("pts", "size"), ppg=("pts", "mean"))
+    out["opp_pg"] = out["ppg"]
+    return out
+
+
+def _project_k_dst_season(season: int, cfg: dict | None = None) -> pd.DataFrame:
+    """K and DST season projections from ingested history.
+
+    Replaces the previous one-variable Vegas anchors (`K_BASE_PPG`,
+    `DST_BASE_PPG`). Baselines come from the same recency-weighted aggregation
+    offence uses -- `_weight_seasons` -- so K/DST cannot drift from how everyone
+    else is aggregated. The Vegas signal is NOT discarded: it remains the
+    matchup factor applied by `project_week` and `project_ros`.
+
+    `usage_trend` is meaningless for these positions; `opp_pg` is set equal to
+    `ppg` so the trend ratio is 1.0 and the term drops out.
+    """
+    cfg = cfg or league_config()
+    seasons = _completed_seasons(season)
+    placeholders = ",".join("?" for _ in seasons)
+    newest = max(seasons)
+
+    kdf = read_df(
+        f"SELECT * FROM kicking_stats WHERE season IN ({placeholders})", tuple(seasons))
+    ddf = read_df(
+        f"SELECT * FROM team_defense WHERE season IN ({placeholders})", tuple(seasons))
+
+    players = _players().set_index("player_id")
     rows = []
-    for _, r in adp.iterrows():
-        pos = "K" if r.position == "PK" else "DST"
-        team = norm_team(r.team)
-        if pos == "K":
-            it = team_it.get(team, LEAGUE_AVG_IMPLIED)
-            ppg = K_BASE_PPG + K_IMPLIED_GAIN * (it - LEAGUE_AVG_IMPLIED)
-            ppg = max(4.0, ppg)
-            # resolve player_id via K roster (kickers exist in players table)
-            pid = _resolve_k_id(r.player_name, team, players)
-        else:
-            oit = opp_it.get(team, LEAGUE_AVG_IMPLIED)
-            ppg = DST_BASE_PPG + DST_IMPLIED_GAIN * (LEAGUE_AVG_IMPLIED - oit)
-            ppg = max(3.0, ppg)
-            pid = f"DST_{team}"
-        proj_games = FULL_SLATE
-        proj = ppg * proj_games
+
+    for pid, per in _kicker_per_season(kdf, cfg).groupby("player_id"):
+        agg = _weight_seasons(per[["season", "games", "ppg", "opp_pg"]], newest, trend=False)
+        if agg["n_seasons"] == 0 or agg["base_ppg"] <= 0:
+            continue
+        name = players.loc[pid, "name"] if pid in players.index else pid
+        team = norm_team(players.loc[pid, "team"]) if pid in players.index else None
+        proj = agg["base_ppg"] * agg["proj_games"]
         rows.append({
-            "player_id": pid, "name": r.player_name, "position": pos, "team": team,
-            "proj_points": round(proj, 1), "proj_ppg": round(ppg, 2),
+            "player_id": pid, "name": name, "position": "K", "team": team,
+            "proj_points": round(proj, 1), "proj_ppg": round(agg["base_ppg"], 2),
             "floor": round(proj * 0.80, 1), "ceiling": round(proj * 1.20, 1),
-            "components": {"model": "adp+implied", "ppg": round(ppg, 2),
-                          "implied_used": round(team_it.get(team, LEAGUE_AVG_IMPLIED) if pos == "K"
-                                                else opp_it.get(team, LEAGUE_AVG_IMPLIED), 1),
-                          "adp": float(r.adp)},
+            "components": {"model": "history", "n_seasons": agg["n_seasons"],
+                           "proj_games": round(agg["proj_games"], 1)},
         })
+
+    for team, per in _dst_per_season(ddf, cfg).groupby("team"):
+        agg = _weight_seasons(per[["season", "games", "ppg", "opp_pg"]], newest, trend=False)
+        if agg["n_seasons"] == 0:
+            continue
+        t = norm_team(team)
+        proj = agg["base_ppg"] * agg["proj_games"]
+        rows.append({
+            "player_id": f"DST_{t}", "name": f"{t} DST", "position": "DST", "team": t,
+            "proj_points": round(proj, 1), "proj_ppg": round(agg["base_ppg"], 2),
+            "floor": round(proj * 0.80, 1), "ceiling": round(proj * 1.20, 1),
+            "components": {"model": "history", "n_seasons": agg["n_seasons"],
+                           "proj_games": round(agg["proj_games"], 1)},
+        })
+
     return pd.DataFrame(rows)
-
-
-def _resolve_k_id(name: str, team: str, players: pd.DataFrame) -> str:
-    cand = players[(players.position == "K")]
-    m = cand[cand.name.str.lower() == name.lower()]
-    if not m.empty:
-        return m.iloc[0].player_id
-    return f"K_{team}"
 
 
 # ---------------------------------------------------------------------------
