@@ -57,33 +57,64 @@ _RENAMES = {  # tolerate schema drift between nflverse releases
     "team_abbr": "team",
     "opponent": "opponent",
     "opponent_team": "opponent",
+    # nflverse renamed thrown picks to `passing_interceptions`; the bare name now
+    # belongs to the DEFENSIVE stat. Without this entry the keep-filter below
+    # silently drops the column and weekly_stats.interceptions stays NULL, which
+    # leaves score_offense blind to picks whenever it is fed a stored row.
+    "passing_interceptions": "interceptions",
 }
+
+# Columns we persist to weekly_stats, spelled the way WE store them.
+WEEKLY_COLUMNS = [
+    "season", "week", "player_id", "team", "opponent", "position",
+    "completions", "attempts", "passing_yards", "passing_tds", "interceptions",
+    "sacks_suffered", "carries", "rushing_yards", "rushing_tds",
+    "receptions", "targets", "receiving_yards", "receiving_tds",
+    "target_share", "air_yards_share",
+    "rushing_fumbles_lost", "receiving_fumbles_lost", "sack_fumbles_lost",
+    "passing_2pt_conversions", "rushing_2pt_conversions", "receiving_2pt_conversions",
+    "special_teams_tds",
+]
+
+# The subset `scoring.score_offense` actually reads off a stored row. Dropping one
+# of these makes scoring quietly wrong rather than loud, so tests assert on it.
+SCORING_INPUT_COLUMNS = (
+    "passing_yards", "passing_tds", "interceptions", "passing_2pt_conversions",
+    "rushing_yards", "rushing_tds", "rushing_2pt_conversions",
+    "receptions", "receiving_yards", "receiving_tds", "receiving_2pt_conversions",
+    "rushing_fumbles_lost", "receiving_fumbles_lost", "sack_fumbles_lost",
+    "special_teams_tds",
+)
+
+
+def normalize_weekly(df: pd.DataFrame, rec_val: float) -> pd.DataFrame:
+    """Map a raw nflverse weekly frame onto our schema and derive league points.
+
+    Pure — no DB, no network — so the column contract is unit-testable without a
+    sync (the same split ``projections.py`` uses to keep its math testable).
+    The keep-filter stays permissive so an optional column vanishing between
+    nflverse releases doesn't sink a sync; ``SCORING_INPUT_COLUMNS`` is what
+    tests pin, because those are the ones that must never go missing quietly.
+    """
+    df = df.rename(columns={k: v for k, v in _RENAMES.items()
+                            if k in df.columns and v not in df.columns})
+    out = df[[c for c in WEEKLY_COLUMNS if c in df.columns]].copy()
+    if "sacks_suffered" in out.columns:
+        out = out.rename(columns={"sacks_suffered": "sacks"})
+    # league points = nflverse standard points + configured per-reception value
+    # (nflverse standard already matches ESPN base: pass TD 4, INT -2, fumble -2)
+    out["fantasy_points_half_ppr"] = (
+        df["fantasy_points"].fillna(0) + df["receptions"].fillna(0) * rec_val
+    )
+    return out
 
 
 def sync_weekly_stats() -> int:
     import nflreadpy as nfl
 
     df = _pull_seasons("weekly", lambda y: nfl.load_player_stats(y, summary_level="week"), _seasons())
-    df = df.rename(columns={k: v for k, v in _RENAMES.items() if k in df.columns and v not in df.columns})
-    keep = [
-        "season", "week", "player_id", "team", "opponent", "position",
-        "completions", "attempts", "passing_yards", "passing_tds", "interceptions",
-        "sacks_suffered", "carries", "rushing_yards", "rushing_tds",
-        "receptions", "targets", "receiving_yards", "receiving_tds",
-        "target_share", "air_yards_share",
-        "rushing_fumbles_lost", "receiving_fumbles_lost", "sack_fumbles_lost",
-        "passing_2pt_conversions", "rushing_2pt_conversions", "receiving_2pt_conversions",
-        "special_teams_tds",
-    ]
-    out = df[[c for c in keep if c in df.columns]].copy()
-    if "sacks_suffered" in out.columns:
-        out = out.rename(columns={"sacks_suffered": "sacks"})
-    # league points = nflverse standard points + configured per-reception value
-    # (nflverse standard already matches ESPN base: pass TD 4, INT -2, fumble -2)
     rec_val = league_config()["scoring"]["receiving"]["reception"]
-    out["fantasy_points_half_ppr"] = (
-        df["fantasy_points"].fillna(0) + df["receptions"].fillna(0) * rec_val
-    )
+    out = normalize_weekly(df, rec_val)
     out = out[out["position"].isin(["QB", "RB", "WR", "TE"])]
     with connect() as conn:
         n = replace_table(out, "weekly_stats", conn)
