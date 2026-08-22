@@ -233,15 +233,30 @@ DEFENSE_INPUT_COLUMNS = (
 _DEFENSE_COLUMNS = ("season", "week", "team", "opponent") + DEFENSE_INPUT_COLUMNS
 
 
+_RAW_DEFENSE_STAT_COLUMNS = tuple(c for c in DEFENSE_INPUT_COLUMNS if c != "points_allowed")
+
+
 def normalize_team_defense(df: pd.DataFrame, scores: pd.DataFrame) -> pd.DataFrame:
     """Team-defense rows with points allowed joined from the schedule.
 
     Points allowed is the OPPONENT's score, so each schedule row contributes two
-    team rows. A defense row with no matching scheduled game is dropped rather
-    than left null: a null would score as a shutout, which is the most valuable
-    outcome in every points-allowed ladder.
+    team rows. A defense row with no matching scheduled game — or one that
+    matches but whose schedule row has no score yet (e.g. an unplayed future
+    game) — is dropped rather than left null: a null would score as a shutout,
+    which is the most valuable outcome in every points-allowed ladder.
+
+    A raw defensive stat column genuinely missing from the source frame is a
+    loud failure, not a silent zero: `weekly_stats.interceptions` was 100% NULL
+    for three seasons because a renamed nflverse column was silently dropped by
+    a permissive filter, and scoring under-counted every QB with nothing
+    noticing. `points_allowed` is excluded from this check because it is
+    derived from the join, not read off the raw frame.
     """
     df = df.rename(columns={"opponent_team": "opponent"})
+    missing = [c for c in _RAW_DEFENSE_STAT_COLUMNS if c not in df.columns]
+    if missing:
+        raise ValueError(f"team_stats is missing defensive scoring columns: {missing}")
+
     home = scores.rename(columns={"home_team": "team", "away_score": "points_allowed"})
     away = scores.rename(columns={"away_team": "team", "home_score": "points_allowed"})
     pa = pd.concat([
@@ -250,9 +265,13 @@ def normalize_team_defense(df: pd.DataFrame, scores: pd.DataFrame) -> pd.DataFra
     ], ignore_index=True)
 
     out = df.merge(pa, on=["season", "week", "team"], how="inner")
-    for c in DEFENSE_INPUT_COLUMNS:
-        if c not in out.columns:
-            out[c] = 0.0
+    # A matched-but-scoreless row (e.g. a future/unplayed game) must be dropped,
+    # not filled — filling would fabricate a shutout. Do this BEFORE the
+    # zero-fill loop below, which only touches the raw stat columns.
+    out = out.dropna(subset=["points_allowed"])
+    out["points_allowed"] = pd.to_numeric(out["points_allowed"], errors="coerce")
+
+    for c in _RAW_DEFENSE_STAT_COLUMNS:
         out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0.0)
     return out[[c for c in _DEFENSE_COLUMNS if c in out.columns]].copy()
 

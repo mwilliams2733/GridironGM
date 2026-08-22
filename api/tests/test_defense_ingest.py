@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from app.etl.nfl_data import DEFENSE_INPUT_COLUMNS, normalize_team_defense
 
@@ -41,3 +42,31 @@ def test_a_row_with_no_matching_schedule_is_dropped_not_nulled():
     orphan = pd.concat([TEAM_STATS, TEAM_STATS.assign(week=99)], ignore_index=True)
     out = normalize_team_defense(orphan, SCORES)
     assert len(out) == 1
+
+
+def test_a_matched_row_with_a_null_score_is_dropped_not_nulled():
+    """The join key can match (e.g. an unplayed future game) while the score is
+    still NULL. The inner join alone does not protect against this — only a
+    dropna on points_allowed after the merge does. A fabricated 0 here is the
+    same fabricated-shutout bug the orphan-row guard exists to prevent.
+    """
+    unplayed_stats = TEAM_STATS.assign(week=2)
+    unplayed_schedule = pd.DataFrame([
+        {"season": 2025, "week": 2, "home_team": "HOU", "away_team": "IND",
+         "home_score": None, "away_score": None},
+    ])
+    stats = pd.concat([TEAM_STATS, unplayed_stats], ignore_index=True)
+    scores = pd.concat([SCORES, unplayed_schedule], ignore_index=True)
+    out = normalize_team_defense(stats, scores)
+    assert len(out) == 1
+    assert out.iloc[0]["week"] == 1
+
+
+def test_a_missing_raw_defensive_column_raises_instead_of_zero_filling():
+    """A raw defensive stat column absent from the source frame must be a loud
+    failure, not a silent zero — the same class of bug that left
+    weekly_stats.interceptions NULL for three seasons undetected.
+    """
+    incomplete = TEAM_STATS.drop(columns=["def_sacks"])
+    with pytest.raises(ValueError, match="def_sacks"):
+        normalize_team_defense(incomplete, SCORES)
