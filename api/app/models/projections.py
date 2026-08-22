@@ -61,7 +61,9 @@ def last_scoring_week(cfg: dict | None = None) -> int:
     unchanged -- which is what keeps the four ESPN leagues identical.
     """
     cfg = cfg or league_config()
-    start = cfg["league"].get("playoff_week_start") or (REG_SEASON_WEEKS + 1)
+    start = cfg["league"].get("playoff_week_start")
+    if start is None:
+        start = REG_SEASON_WEEKS + 1
     return min(REG_SEASON_WEEKS, int(start) - 1)
 
 
