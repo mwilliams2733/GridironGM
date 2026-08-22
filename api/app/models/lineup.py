@@ -52,25 +52,50 @@ def _confidence(rec: dict) -> str:
     return "Medium"
 
 
-def _slot_labels(starters: dict) -> list[str]:
-    """Expand starter counts into labeled slots: RB->RB1,RB2 etc."""
-    labels = []
-    for pos in ("QB", "RB", "WR", "TE", "FLEX", "K", "DST"):
+def slot_plan(cfg: dict) -> list[tuple[str, tuple[str, ...]]]:
+    """Ordered (label, eligible_positions) for every starting slot.
+
+    Fixed positions expand to numbered labels (RB -> RB1, RB2). Flex-type slots
+    come from `flex_slot_defs`, so SUPER_FLEX needs no code change here.
+
+    ORDER IS LOAD-BEARING. Slots are sorted by ascending eligibility breadth so
+    the most restrictive is filled first. With FLEX (RB/WR/TE) and SUPER_FLEX
+    (QB/RB/WR/TE) and only a WR 25 and a QB 20 left, filling SUPER_FLEX first
+    takes the WR and strands FLEX with nobody eligible: 25 instead of 45.
+    Because FLEX is a subset of SUPER_FLEX the eligibility family is laminar,
+    and restrictive-first greedy is optimal on it. `_brute_force_best` pins that.
+    """
+    from .vorp import flex_slot_defs
+
+    starters = cfg["roster"]["starters"]
+    flex_defs = flex_slot_defs(cfg)
+
+    plan: list[tuple[str, tuple[str, ...]]] = []
+    for pos in ("QB", "RB", "WR", "TE", "K", "DST"):
         n = starters.get(pos, 0)
         if n == 1:
-            labels.append(pos)
+            plan.append((pos, (pos,)))
         else:
-            labels.extend(f"{pos}{i+1}" for i in range(n))
-    return labels
+            plan.extend((f"{pos}{i + 1}", (pos,)) for i in range(n))
+
+    for label, d in flex_defs.items():
+        n = starters.get(label, 0)
+        elig = tuple(d["eligible"])
+        if n == 1:
+            plan.append((label, elig))
+        else:
+            plan.extend((f"{label}{i + 1}", elig) for i in range(n))
+
+    plan.sort(key=lambda p: len(p[1]))
+    return plan
 
 
 def optimize(roster_ids: list[str], season: int, week: int,
              current_lineup: list[str] | None = None,
-             week_proj: pd.DataFrame | None = None) -> LineupResult:
+             week_proj: pd.DataFrame | None = None,
+             cfg: dict | None = None) -> LineupResult:
     """Compute the optimal legal lineup for ``roster_ids`` in a given week."""
-    cfg = league_config()
-    starters = cfg["roster"]["starters"]
-    flex_elig = cfg["roster"]["flex_eligible"]
+    cfg = cfg or league_config()
 
     if week_proj is None:
         week_proj = proj.project_week(season, week)
@@ -90,13 +115,13 @@ def optimize(roster_ids: list[str], season: int, week: int,
     # margins captured while filling, for close-call detection
     margins: list[dict] = []
 
-    def pick(pos_filter, label):
+    def pick(eligible_positions, label):
         pool = sorted(
             (r for r in recs.values()
-             if r["player_id"] not in used and _eligible(r, pos_filter)),
+             if r["player_id"] not in used and _eligible(r, eligible_positions)),
             key=lambda r: r["proj_points"], reverse=True)
         if not pool:
-            slots[label] = {"name": "(empty)", "position": pos_filter,
+            slots[label] = {"name": "(empty)", "position": "/".join(eligible_positions),
                             "proj_points": 0.0, "floor": 0.0, "ceiling": 0.0,
                             "confidence": "Low", "player_id": None}
             return
@@ -111,16 +136,13 @@ def optimize(roster_ids: list[str], season: int, week: int,
                             "margin": round(chosen["proj_points"] - pool[1]["proj_points"], 2),
                             "alt_proj": pool[1]["proj_points"]})
 
-    def _eligible(r, pos_filter):
-        if pos_filter == "FLEX":
-            return r["position"] in flex_elig
-        return r["position"] == pos_filter
+    def _eligible(r, eligible_positions):
+        return r["position"] in eligible_positions
 
-    # Fill fixed slots first (each independent), then FLEX from leftovers.
-    for label in _slot_labels(starters):
-        base_pos = "FLEX" if label.startswith("FLEX") else \
-            "".join(c for c in label if not c.isdigit())
-        pick(base_pos, label)
+    # Fill slots in ascending eligibility breadth (most restrictive first) so a
+    # wide slot like SUPER_FLEX never strands a narrower one like FLEX.
+    for label, elig in slot_plan(cfg):
+        pick(elig, label)
 
     total = round(sum(s["proj_points"] for s in slots.values()), 2)
     bench = [{**r, "confidence": _confidence(r)}
@@ -142,34 +164,30 @@ def optimize(roster_ids: list[str], season: int, week: int,
                         current_total=current_total, delta=delta, close_calls=close)
 
 
-def _brute_force_best(recs: dict, starters: dict, flex_elig: list[str]) -> float:
-    """Reference optimum by enumeration (validation only, small rosters)."""
-    from itertools import combinations
+def _brute_force_best(recs: dict, cfg: dict) -> float:
+    """Reference optimum by exhaustive assignment (validation only).
+
+    Slot-generic, so it validates superflex the same way it validates the
+    single-FLEX case. Exponential in slot count, which is fine for the 9-10
+    slots and <=20 players a fantasy roster holds.
+    """
+    plan = slot_plan(cfg)
     players = list(recs.values())
-    best = -1.0
 
-    def rec_pts(ids):
-        return sum(recs[i]["proj_points"] for i in ids)
+    def best(slot_i: int, used: frozenset) -> float:
+        if slot_i >= len(plan):
+            return 0.0
+        _, elig = plan[slot_i]
+        options = [p for p in players
+                   if p["player_id"] not in used and p["position"] in elig]
+        if not options:
+            return best(slot_i + 1, used)
+        return max(
+            p["proj_points"] + best(slot_i + 1, used | {p["player_id"]})
+            for p in options
+        )
 
-    ids_by_pos = {}
-    for r in players:
-        ids_by_pos.setdefault(r["position"], []).append(r["player_id"])
-
-    def fill(pos, n):
-        return list(combinations(ids_by_pos.get(pos, []), n))
-
-    for qb in fill("QB", starters.get("QB", 0)):
-        for rb in fill("RB", starters.get("RB", 0)):
-            for wr in fill("WR", starters.get("WR", 0)):
-                for te in fill("TE", starters.get("TE", 0)):
-                    fixed = set(qb + rb + wr + te)
-                    flex_pool = [r["player_id"] for r in players
-                                 if r["position"] in flex_elig and r["player_id"] not in fixed]
-                    for fx in combinations(flex_pool, starters.get("FLEX", 0)):
-                        for k in fill("K", starters.get("K", 0)):
-                            for d in fill("DST", starters.get("DST", 0)):
-                                best = max(best, rec_pts(qb + rb + wr + te + fx + k + d))
-    return round(best, 2)
+    return round(best(0, frozenset()), 2)
 
 
 if __name__ == "__main__":
@@ -208,5 +226,5 @@ if __name__ == "__main__":
     recs = {r.player_id: {"player_id": r.player_id, "position": r.position,
                           "proj_points": r.proj_points}
             for _, r in wk[wk.player_id.isin(roster)].iterrows()}
-    bf = _brute_force_best(recs, cfg["roster"]["starters"], cfg["roster"]["flex_eligible"])
+    bf = _brute_force_best(recs, cfg)
     print(f"\n  greedy total={res.total}  brute-force optimum={bf}  match={abs(res.total-bf)<0.01}")
