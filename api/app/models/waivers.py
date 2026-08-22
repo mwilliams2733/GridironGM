@@ -113,7 +113,7 @@ def rank_free_agents(free_agents: list[str], my_roster: list[str],
     wk = proj.project_week(season, week, season_proj=season_proj)
     ros_pts = ros.set_index("player_id")["proj_points"].to_dict()
     wk_pts = wk.set_index("player_id")["proj_points"].to_dict()
-    names = season_proj.set_index("player_id")[["name", "position"]]
+    names = season_proj.set_index("player_id")[["name", "position", "team"]]
 
     _, _, bench = _my_lineup_split(my_roster, ros, cfg)
     # worst droppable bench player per position and overall
@@ -159,6 +159,7 @@ def rank_free_agents(free_agents: list[str], my_roster: list[str],
                      + f"; {conf} confidence")
         rows.append({
             "player_id": pid, "name": names.loc[pid, "name"], "pos": pos,
+            "team": names.loc[pid, "team"],
             "ros_value": round(rv, 1), "next_week_value": round(nv, 1),
             "score": round(score, 1), "breakout_flags": fl,
             "suggested_drop": worst_name, "suggested_drop_id": worst_drop_id,

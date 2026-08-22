@@ -13,6 +13,7 @@ unused eligible). The smoke block verifies this against brute-force enumeration.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -101,13 +102,14 @@ def optimize(roster_ids: list[str], season: int, week: int,
         week_proj = proj.project_week(season, week)
     pw = week_proj[week_proj.player_id.isin(roster_ids)].copy()
     recs = {r.player_id: {"player_id": r.player_id, "name": r["name"],
-                          "position": r.position, "opponent": r.get("opponent"),
+                          "position": r.position, "team": r.get("team"),
+                          "opponent": r.get("opponent"),
                           "proj_points": r.proj_points, "floor": r.floor,
                           "ceiling": r.ceiling} for _, r in pw.iterrows()}
     # roster players with no weekly projection (bye/out) -> 0 pts, still benchable
     for pid in roster_ids:
         recs.setdefault(pid, {"player_id": pid, "name": pid, "position": "?",
-                              "opponent": None, "proj_points": 0.0,
+                              "team": None, "opponent": None, "proj_points": 0.0,
                               "floor": 0.0, "ceiling": 0.0})
 
     used: set[str] = set()
@@ -121,9 +123,13 @@ def optimize(roster_ids: list[str], season: int, week: int,
              if r["player_id"] not in used and _eligible(r, eligible_positions)),
             key=lambda r: r["proj_points"], reverse=True)
         if not pool:
-            slots[label] = {"name": "(empty)", "position": "/".join(eligible_positions),
-                            "proj_points": 0.0, "floor": 0.0, "ceiling": 0.0,
-                            "confidence": "Low", "player_id": None}
+            # `label` is the slot name (e.g. "RB1", "FLEX", "SUPER_FLEX"), possibly
+            # with a numbered suffix for a multi-count position -- stripped so the
+            # badge shows one word ("RB") instead of joined eligibility
+            # ("QB/RB/WR/TE") for a bye-week SUPER_FLEX with nobody eligible.
+            slots[label] = {"name": "(empty)", "position": re.sub(r"\d+$", "", label),
+                            "team": None, "proj_points": 0.0, "floor": 0.0,
+                            "ceiling": 0.0, "confidence": "Low", "player_id": None}
             return
         chosen = pool[0]
         used.add(chosen["player_id"])

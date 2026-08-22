@@ -63,6 +63,22 @@ def _free_agent_ids(my_roster: list[str], season: int,
     return ids, "ESPN free-agent cache unavailable — using ADP fallback"
 
 
+def _faab_remaining(league_id: str | None) -> float | None:
+    """Budget left to spend, from the roster's `faab_used` (Sleeper) against the
+    configured budget. `None` when the platform doesn't report usage (ESPN),
+    so `rank_free_agents` falls back to a full budget rather than treating an
+    absent value as zero spent."""
+    try:
+        result = platform.get_my_roster(league_id)
+    except Exception:
+        return None
+    team = result.get("team") or {}
+    if "faab_used" not in team:
+        return None
+    budget = league_config(league_id)["waivers"]["faab_budget"]
+    return float(budget) - float(team["faab_used"] or 0)
+
+
 @router.get("/rankings")
 def get_rankings(week: int = 1, league_id: str | None = None) -> dict:
     season = current_season()
@@ -71,8 +87,10 @@ def get_rankings(week: int = 1, league_id: str | None = None) -> dict:
     if not fa_ids:
         return {"rankings": [], "warning": warning or "no free agents available"}
 
+    faab_remaining = _faab_remaining(league_id)
     try:
-        df = waivers_model.rank_free_agents(fa_ids, my_roster, season, week)
+        df = waivers_model.rank_free_agents(fa_ids, my_roster, season, week,
+                                            faab_remaining=faab_remaining)
     except Exception as exc:
         log.warning("rank_free_agents failed: %s", exc)
         return {"rankings": [], "warning": str(exc)}

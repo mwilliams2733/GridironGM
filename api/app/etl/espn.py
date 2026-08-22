@@ -162,6 +162,20 @@ def team_slot_map(league_id: str | None = None) -> dict[int, int]:
     return mapping
 
 
+# espn-api lineup slot names for bench/IR -- never "started" so never in `starters`.
+_NON_STARTING_SLOTS = {"BE", "IR", "BN"}
+
+
+def _starters_from_roster(roster: list[dict]) -> list[dict]:
+    """Roster entries actually in a starting `lineup_slot` (not bench/IR).
+
+    Kept as full entries (not resolved ids) -- the router resolves them with
+    the same `resolve_roster_entry` it already uses for the rest of the
+    roster, so identity resolution logic lives in exactly one place.
+    """
+    return [p for p in roster if p.get("lineup_slot") not in _NON_STARTING_SLOTS]
+
+
 def get_my_roster(league_id: str | None = None) -> dict:
     """My roster: ESPN cache if synced (first team owned by user unattributable —
     use manual selection), else manual roster, else empty manual-mode shell."""
@@ -173,7 +187,8 @@ def get_my_roster(league_id: str | None = None) -> dict:
         tid = my_team["data"]["team_id"]
         for t in teams["data"]:
             if t["team_id"] == tid:
-                return {"mode": "espn", "team": t}
+                team = {**t, "starters": _starters_from_roster(t.get("roster") or [])}
+                return {"mode": "espn", "team": team}
     if manual:
         return {"mode": "manual", "team": {"name": "My Team (manual)", "roster": manual["data"]}}
     return {"mode": "none", "team": {"name": "My Team", "roster": []}}

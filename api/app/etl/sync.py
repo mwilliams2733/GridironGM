@@ -69,6 +69,17 @@ def run_sync(scope: str = "all") -> dict:
         except Exception as exc:
             log.exception("sync %s failed", name)
             results[name] = f"error: {exc}"
+
+    # A sync updates the database; without this the process keeps serving
+    # pre-sync projections until restart.
+    from ..models import projections as proj
+    proj._weekly_rows.cache_clear()
+    proj._players.cache_clear()
+    proj._snaps.cache_clear()
+    proj._completed_seasons.cache_clear()
+    from ..routers import draft as draft_router
+    draft_router._season_proj_cache.clear()
+
     return results
 
 

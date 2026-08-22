@@ -1,6 +1,6 @@
 import { Fragment, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronDown, TrendingUp } from "lucide-react";
+import { ChevronDown, TrendingUp, TriangleAlert } from "lucide-react";
 import { api } from "@/lib/api";
 import { useLeagueKey } from "@/lib/league";
 import { PageHeader } from "@/components/Layout";
@@ -48,6 +48,13 @@ export function Waivers() {
           </Select>
         }
       />
+
+      {rankingsQuery.data?.warning && (
+        <div className="mb-4 flex items-center gap-2 rounded-md border border-amber-600/40 bg-amber-500/5 px-3 py-2 text-sm text-amber-500">
+          <TriangleAlert className="h-4 w-4 shrink-0" />
+          {rankingsQuery.data.warning}
+        </div>
+      )}
 
       {rankingsQuery.isLoading ? (
         <Card>

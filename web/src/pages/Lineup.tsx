@@ -113,9 +113,9 @@ function ManualRosterDialog({ open, onOpenChange }: { open: boolean; onOpenChang
                 <Trash2 className="h-3.5 w-3.5" />
               </Button>
 
-              {activeRow === i && nameQuery.trim().length >= 2 && (suggestQuery.data?.length ?? 0) > 0 && (
+              {activeRow === i && nameQuery.trim().length >= 2 && (suggestQuery.data?.players.length ?? 0) > 0 && (
                 <div className="absolute left-0 top-10 z-10 w-64 rounded-md border border-field-700 bg-field-850 shadow-xl">
-                  {suggestQuery.data!.slice(0, 6).map((p) => (
+                  {suggestQuery.data!.players.slice(0, 6).map((p) => (
                     <button
                       key={p.player_id}
                       type="button"

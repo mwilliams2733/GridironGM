@@ -132,10 +132,9 @@ export interface SetMyTeamRequest {
   team_id: string | number;
 }
 
-export type PlayersResponse = (Player & {
-  adp?: Num;
-  proj?: Num;
-})[];
+export interface PlayersResponse {
+  players: (Player & { adp?: Num; proj?: Num })[];
+}
 
 // --- draft.py ------------------------------------------------------------
 
