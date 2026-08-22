@@ -290,6 +290,54 @@ def sync_team_defense() -> int:
     return n
 
 
+# Columns `scoring.score_kicker` reads. These are nflverse's own names, which is
+# why score_kicker needs no translation layer.
+KICKING_INPUT_COLUMNS = (
+    "fg_made_0_19", "fg_made_20_29", "fg_made_30_39", "fg_made_40_49",
+    "fg_made_50_59", "fg_made_60_", "fg_missed", "pat_made", "pat_missed",
+)
+
+_KICKING_COLUMNS = ("season", "week", "player_id", "team", "opponent") + KICKING_INPUT_COLUMNS
+
+
+def normalize_kicking(df: pd.DataFrame) -> pd.DataFrame:
+    """Kicker rows from a raw nflverse weekly frame.
+
+    Kickers are filtered out of `weekly_stats` because their stat line shares no
+    columns with offensive players; they get their own table rather than adding
+    nine mostly-null columns to 18k offensive rows.
+
+    A KICKING_INPUT_COLUMNS entry genuinely missing from the raw frame is a loud
+    failure, not a silent zero — see the identical guard and rationale in
+    `normalize_team_defense`: `weekly_stats.interceptions` went silently NULL for
+    three seasons because a permissive zero-fill masked a renamed nflverse
+    column, and score_offense under-counted every QB with nothing noticing. A
+    NaN on a column that IS present is filled to 0.0, which is legitimate (a
+    kicker with no 50+ yard attempts that week really did attempt zero).
+    """
+    df = df.rename(columns={k: v for k, v in _RENAMES.items()
+                            if k in df.columns and v not in df.columns})
+    missing = [c for c in KICKING_INPUT_COLUMNS if c not in df.columns]
+    if missing:
+        raise ValueError(f"weekly stats is missing kicking scoring columns: {missing}")
+
+    out = df[df["position"] == "K"].copy()
+    for c in KICKING_INPUT_COLUMNS:
+        out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0.0)
+    return out[[c for c in _KICKING_COLUMNS if c in out.columns]].copy()
+
+
+def sync_kicking_stats() -> int:
+    import nflreadpy as nfl
+
+    df = _pull_seasons("weekly", lambda y: nfl.load_player_stats(y, summary_level="week"), _seasons())
+    out = normalize_kicking(df)
+    with connect() as conn:
+        n = replace_table(out, "kicking_stats", conn)
+    mark_synced("kicking_stats", f"{n} rows")
+    return n
+
+
 def sync_injuries() -> int:
     import nflreadpy as nfl
 
@@ -318,4 +366,5 @@ def sync_all_stats() -> dict[str, int]:
         "injuries": sync_injuries(),
         "depth_charts": sync_depth_charts(),
         "team_defense": sync_team_defense(),
+        "kicking_stats": sync_kicking_stats(),
     }

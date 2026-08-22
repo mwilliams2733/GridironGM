@@ -49,6 +49,13 @@ CREATE TABLE IF NOT EXISTS team_defense (
     special_teams_tds REAL, points_allowed REAL,
     PRIMARY KEY (season, week, team)
 );
+CREATE TABLE IF NOT EXISTS kicking_stats (
+    season INTEGER, week INTEGER, player_id TEXT, team TEXT, opponent TEXT,
+    fg_made_0_19 REAL, fg_made_20_29 REAL, fg_made_30_39 REAL,
+    fg_made_40_49 REAL, fg_made_50_59 REAL, fg_made_60_ REAL,
+    fg_missed REAL, pat_made REAL, pat_missed REAL,
+    PRIMARY KEY (season, week, player_id)
+);
 CREATE TABLE IF NOT EXISTS injuries (
     season INTEGER, week INTEGER, player_id TEXT,
     report_status TEXT, practice_status TEXT,
