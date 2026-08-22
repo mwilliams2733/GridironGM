@@ -34,11 +34,15 @@ def test_dst_scores_through_the_leagues_own_points_allowed_ladder():
 
 
 def test_dst_per_season_aggregates_games_and_ppg():
+    # ESPN dst scoring: sack=1, interception=2, fumble_recovery=2, touchdown=6,
+    # safety=2, block_kick=2; points_allowed_tiers has [17, 1] (<=17 allowed -> 1).
+    # DEF_ROWS: 3 sacks + 1 INT + 1 fumble_recovery_opp + 17 allowed, per game:
+    #   3*1 + 1*2 + 1*2 + 0*6 + 0*2 + 0*2 + 1 (PA tier) = 3 + 2 + 2 + 1 = 8.0
     out = _dst_per_season(DEF_ROWS, league_config())
     row = out.iloc[0]
     assert row["games"] == 5
     assert row["season"] == 2025
-    assert row["ppg"] > 0
+    assert row["ppg"] == 8.0
 
 
 def test_kicker_per_season_aggregates_games_and_ppg():

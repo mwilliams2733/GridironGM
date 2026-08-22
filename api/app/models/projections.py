@@ -480,6 +480,12 @@ def _project_k_dst_season(season: int, cfg: dict | None = None) -> pd.DataFrame:
 
     for team, per in _dst_per_season(ddf, cfg).groupby("team"):
         agg = _weight_seasons(per[["season", "games", "ppg", "opp_pg"]], newest, trend=False)
+        # Deliberately no `base_ppg <= 0` guard here (unlike the kicker loop above):
+        # a defense that gives up a lot of points allowed can legitimately average
+        # a negative score under a tiered ladder -- that's real signal a fantasy
+        # manager needs to see, not a data artifact to hide. A kicker cannot score
+        # negative under any of these leagues' scoring, so `base_ppg <= 0` there
+        # only ever catches missing/garbage data, never a real bad kicker.
         if agg["n_seasons"] == 0:
             continue
         t = norm_team(team)
