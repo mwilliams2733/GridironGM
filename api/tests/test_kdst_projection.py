@@ -53,6 +53,6 @@ def test_kicker_per_season_aggregates_games_and_ppg():
          "fg_missed": 0, "pat_made": 2, "pat_missed": 0}
         for w in range(1, 5)
     ])
-    out = _kicker_per_season(k, league_config())
+    out = _kicker_per_season(k, league_config("league1"))  # explicit: ESPN's kicking scoring
     assert out.iloc[0]["games"] == 4
     assert out.iloc[0]["ppg"] == 9.0  # 3 + 4 + 2

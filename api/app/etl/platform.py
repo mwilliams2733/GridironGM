@@ -5,7 +5,11 @@ Routers consume one shape regardless of platform; the per-platform modules
 """
 from __future__ import annotations
 
+import logging
+
 from ..config import league_config, resolve_league
+
+log = logging.getLogger(__name__)
 
 DEFAULT_PLATFORM = "espn"
 
@@ -23,7 +27,13 @@ def get_my_roster(league_id: str | None = None) -> dict:
             return {"mode": "none", "team": {"name": "My Team", "roster": []}}
         slot = (league_config(lid).get("draft") or {}).get("my_slot")
         rosters = cache["data"]
-        mine = next((r for r in rosters if r["roster_id"] == slot), rosters[0])
+        mine = next((r for r in rosters if r["roster_id"] == slot), None)
+        if mine is None:
+            log.warning(
+                "sleeper %s: draft.my_slot=%r matches no synced roster_id — "
+                "falling back to roster_id=%s. Set draft.my_slot in league.yaml.",
+                lid, slot, rosters[0]["roster_id"])
+            mine = rosters[0]
         return {"mode": "sleeper", "team": {
             "name": mine["name"],
             "roster": [{"player_id": p} for p in mine["players"]],

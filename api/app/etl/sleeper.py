@@ -224,6 +224,7 @@ def _check_scoring_drift(league: dict, lid: str) -> None:
         "rec_2pt": cfg["receiving"]["two_point"],
         # misc
         "fum_lost": cfg["misc"]["fumble_lost"],
+        "st_td": cfg["misc"]["return_touchdown"],
         # kicking (Sleeper splits 0-39 into three bands, all worth fg_0_39 here)
         "fgm_0_19": cfg["kicking"]["fg_0_39"],
         "fgm_20_29": cfg["kicking"]["fg_0_39"],
@@ -241,6 +242,17 @@ def _check_scoring_drift(league: dict, lid: str) -> None:
         "def_td": cfg["dst"]["touchdown"],
         "safe": cfg["dst"]["safety"],
         "blk_kick": cfg["dst"]["block_kick"],
+        # Deliberately NOT checked -- Sleeper reports these but league.yaml's
+        # scoring schema has no corresponding field to compare against, so
+        # there is nothing to transcribe or drift-check:
+        #   fum              offense fumble (not lost) -- we only score fumble_lost
+        #   fum_rec_td       fumble-return TD as a distinct category from st_td/def_td
+        #   def_st_ff        forced fumble on a special-teams/return play (vs `ff`)
+        #   def_st_fum_rec   fumble recovery on a special-teams/return play (vs `fum_rec`)
+        #   def_st_td        special-teams TD as a category distinct from `st_td`/`def_td`
+        #   st_ff            forced fumble on a return play, alt category to `ff`
+        #   st_fum_rec       fumble recovery on a return play, alt category to `fum_rec`
+        #   fgm_60p          60+ yard FG bonus -- our kicking ladder tops out at fg_50_plus
     }
     for key, ours in checks.items():
         theirs = live.get(key)

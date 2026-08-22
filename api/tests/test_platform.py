@@ -90,3 +90,109 @@ def test_leagues_that_omit_the_key_pass_validation():
     """The four ESPN leagues set neither key -- validation must not start
     rejecting configs that were always legal."""
     validate_league_config(league_config("league1"), "league1")
+
+
+# ---------------------------------------------------------------------------
+# resolve_roster_entry: the router-level guard that stops a Sleeper-shaped
+# roster entry's already-resolved player_id from being silently overwritten
+# with None by the ESPN resolver (see app/routers/_common.py).
+# ---------------------------------------------------------------------------
+import pandas as pd
+
+from app.routers._common import norm_name, resolve_espn_player, resolve_roster_entry
+
+
+def _fake_players() -> pd.DataFrame:
+    df = pd.DataFrame([
+        {"player_id": "00-0031234", "name": "Test Player", "position": "WR",
+         "team": "KC", "espn_id": 12345.0},
+    ])
+    df["norm"] = df["name"].map(norm_name)
+    return df
+
+
+def test_resolve_roster_entry_sleeper_shape_returns_id_unchanged():
+    players = _fake_players()
+    entry = {"player_id": "00-0033077"}
+    assert resolve_roster_entry(entry, players) == "00-0033077"
+
+
+def test_resolve_roster_entry_sleeper_shape_preserves_unresolved_none():
+    """An entry the identity cascade could not place carries player_id=None;
+    resolve_roster_entry must return that None, not re-resolve it via ESPN."""
+    players = _fake_players()
+    entry = {"player_id": None}
+    assert resolve_roster_entry(entry, players) is None
+
+
+def test_resolve_roster_entry_espn_shape_routes_through_espn_resolver():
+    players = _fake_players()
+    entry = {"espn_id": 12345.0, "name": "wrong name", "position": "WR"}
+    assert resolve_roster_entry(entry, players) == "00-0031234"
+
+
+def test_resolve_roster_entry_guards_against_the_regression_it_fixes():
+    """Direct evidence of the bug the `"player_id" in entry` branch prevents:
+    feeding a Sleeper-shaped entry straight into resolve_espn_player (what
+    happened before this fix) resolves against an empty name and loses the
+    id. resolve_roster_entry must not do that."""
+    players = _fake_players()
+    entry = {"player_id": "00-0033077"}
+    regressed = resolve_espn_player(entry.get("espn_id"), entry.get("name", ""),
+                                    entry.get("position"), players)
+    assert regressed is None  # the bug this guard prevents is real, not theoretical
+    assert resolve_roster_entry(entry, players) == "00-0033077"
+
+
+# ---------------------------------------------------------------------------
+# run_sync("espn"): the "espn" scope must dispatch each configured league to
+# its own platform's sync function, and one league's failure must not stop
+# the others.
+# ---------------------------------------------------------------------------
+def test_run_sync_espn_scope_dispatches_by_platform(monkeypatch):
+    import app.config as config_mod
+    import app.etl.espn as espn_mod
+    import app.etl.platform as platform_mod
+    import app.etl.sleeper as sleeper_mod
+    from app.etl.sync import run_sync
+
+    monkeypatch.setattr(config_mod, "league_ids", lambda: ["espn_lg", "sleeper_lg"])
+    monkeypatch.setattr(platform_mod, "platform_of",
+                        lambda lid: "sleeper" if lid == "sleeper_lg" else "espn")
+    monkeypatch.setattr(espn_mod, "espn_available", lambda lid: True)
+    monkeypatch.setattr(espn_mod, "sync_espn", lambda lid: {"platform": "espn", "lid": lid})
+    monkeypatch.setattr(sleeper_mod, "sleeper_available", lambda lid: True)
+    monkeypatch.setattr(sleeper_mod, "sync_sleeper", lambda lid: {"platform": "sleeper", "lid": lid})
+
+    out = run_sync("espn")
+
+    assert out["espn"]["espn_lg"] == {"platform": "espn", "lid": "espn_lg"}
+    assert out["espn"]["sleeper_lg"] == {"platform": "sleeper", "lid": "sleeper_lg"}
+
+
+def test_run_sync_espn_scope_isolates_one_leagues_failure(monkeypatch):
+    """The existing per-league try/except contract: a Sleeper sync exception
+    must be captured for that league only, leaving the ESPN league's result
+    untouched."""
+    import app.config as config_mod
+    import app.etl.espn as espn_mod
+    import app.etl.platform as platform_mod
+    import app.etl.sleeper as sleeper_mod
+    from app.etl.sync import run_sync
+
+    monkeypatch.setattr(config_mod, "league_ids", lambda: ["espn_lg", "sleeper_lg"])
+    monkeypatch.setattr(platform_mod, "platform_of",
+                        lambda lid: "sleeper" if lid == "sleeper_lg" else "espn")
+    monkeypatch.setattr(espn_mod, "espn_available", lambda lid: True)
+    monkeypatch.setattr(espn_mod, "sync_espn", lambda lid: {"platform": "espn", "lid": lid})
+    monkeypatch.setattr(sleeper_mod, "sleeper_available", lambda lid: True)
+
+    def _boom(lid):
+        raise RuntimeError("sleeper API down")
+
+    monkeypatch.setattr(sleeper_mod, "sync_sleeper", _boom)
+
+    out = run_sync("espn")
+
+    assert out["espn"]["espn_lg"] == {"platform": "espn", "lid": "espn_lg"}
+    assert "error: sleeper API down" in out["espn"]["sleeper_lg"]
