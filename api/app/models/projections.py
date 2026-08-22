@@ -48,6 +48,23 @@ def norm_team(team) -> str | None:
 REG_SEASON_WEEKS = 18            # NFL regular season; weeks 19-22 are playoffs (excluded)
 FULL_SLATE = 17                  # games a fully-available player plays in an 18-week season
 
+
+def last_scoring_week(cfg: dict | None = None) -> int:
+    """Final week that counts toward making the fantasy playoffs.
+
+    A league whose playoffs start week 15 stops accruing regular-season value at
+    week 14; weeks 15-17 pay out only if you qualify and week 18 never does.
+    Since waiver rankings are ROS-driven, an uncapped horizon systematically
+    overvalues players with strong late schedules.
+
+    Absent `playoff_week_start`, returns REG_SEASON_WEEKS so behaviour is
+    unchanged -- which is what keeps the four ESPN leagues identical.
+    """
+    cfg = cfg or league_config()
+    start = cfg["league"].get("playoff_week_start") or (REG_SEASON_WEEKS + 1)
+    return min(REG_SEASON_WEEKS, int(start) - 1)
+
+
 # Recency weights applied to the 3 most-recent completed seasons (newest first).
 RECENCY_WEIGHTS = (0.50, 0.30, 0.20)
 
@@ -738,7 +755,7 @@ def project_ros(season: int, week: int, store: bool = False,
     if season_proj.empty:
         return pd.DataFrame()
     dvp = dvp_factors(season, week, cfg)
-    weeks = range(max(week, 1), REG_SEASON_WEEKS + 1)
+    weeks = range(max(week, 1), last_scoring_week(cfg) + 1)
 
     # Per-week context, built once. Each week normalises its implied totals against
     # its OWN slate, exactly as project_week does, so the two stay comparable.
