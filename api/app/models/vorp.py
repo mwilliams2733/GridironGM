@@ -33,29 +33,54 @@ NEED_BYE_PENALTY = 4.0    # penalty when a pick stacks an existing starter's bye
 # ---------------------------------------------------------------------------
 # Replacement levels
 # ---------------------------------------------------------------------------
+# Historical share of flex usage by position, used when a league declares
+# `flex_eligible` but not the richer `flex_slots` block. RB/WR carry flex far
+# more often than TE.
+LEGACY_FLEX_SHARE = {"RB": 0.45, "WR": 0.45, "TE": 0.10}
+
+
+def flex_slot_defs(cfg: dict) -> dict[str, dict]:
+    """Flex-type slots as {label: {"eligible": [...], "share": {pos: fraction}}}.
+
+    A league that declares `roster.flex_slots` is taken at its word. One that
+    does not gets the legacy single FLEX synthesised from `flex_eligible`, so
+    configs written before superflex existed keep their exact behaviour.
+    """
+    roster = cfg["roster"]
+    declared = roster.get("flex_slots")
+    if declared:
+        return {label: {"eligible": list(d["eligible"]), "share": dict(d["share"])}
+                for label, d in declared.items()}
+    elig = roster.get("flex_eligible", ["RB", "WR", "TE"])
+    share = {pos: LEGACY_FLEX_SHARE.get(pos, 1 / len(elig)) for pos in elig}
+    return {"FLEX": {"eligible": list(elig), "share": share}}
+
+
 def replacement_levels(cfg: dict | None = None) -> dict[str, int]:
-    """Replacement RANK per position = number of that position expected to be
-    rostered as startable across the league. Derived from starters + a share of
-    FLEX demand spread over flex-eligible positions.
+    """Replacement RANK per position = how many of that position the league is
+    expected to roster as startable. Derived from fixed starters plus each
+    flex-type slot's demand, spread over its eligible positions.
 
     Example (12-team, 1QB/2RB/2WR/1TE/1FLEX/1K/1DST): QB12, TE12, K12, DST12,
-    and RB/WR each get their 2*12 starters plus half the flex pool.
+    and RB/WR each get 2*12 starters plus their share of the flex pool.
+
+    With a SUPER_FLEX slot the QB line moves sharply: 12 fixed QB starters plus
+    ~0.90 of 12 superflex slots puts replacement near QB23 rather than QB12.
     """
     cfg = cfg or league_config()
     teams = int(cfg["league"]["teams"])
     starters = cfg["roster"]["starters"]
-    flex_elig = cfg["roster"].get("flex_eligible", ["RB", "WR", "TE"])
 
     levels: dict[str, float] = {}
     for pos in ("QB", "RB", "WR", "TE", "K", "DST"):
         levels[pos] = starters.get(pos, 0) * teams
 
-    # Distribute FLEX demand across flex-eligible positions by their historical
-    # share of flex usage (RB/WR heavier than TE). Fixed shares, documented.
-    flex_slots = starters.get("FLEX", 0) * teams
-    flex_share = {"RB": 0.45, "WR": 0.45, "TE": 0.10}
-    for pos in flex_elig:
-        levels[pos] = levels.get(pos, 0) + flex_slots * flex_share.get(pos, 1 / len(flex_elig))
+    for label, d in flex_slot_defs(cfg).items():
+        slots = starters.get(label, 0) * teams
+        if not slots:
+            continue
+        for pos in d["eligible"]:
+            levels[pos] = levels.get(pos, 0) + slots * d["share"].get(pos, 0.0)
 
     return {pos: int(round(rank)) for pos, rank in levels.items()}
 
