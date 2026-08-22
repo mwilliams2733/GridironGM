@@ -7,9 +7,9 @@ from fastapi import APIRouter
 
 from ..config import current_season
 from ..db import read_df
-from ..etl import espn as espn_etl
+from ..etl import platform
 from ..models import lineup as lineup_model
-from ._common import all_players, records, resolve_espn_player
+from ._common import all_players, records, resolve_roster_entry
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/lineup", tags=["lineup"])
@@ -33,7 +33,7 @@ def _default_week(season: int) -> int:
 
 def _roster_ids(league_id: str | None = None) -> list[str]:
     try:
-        result = espn_etl.get_my_roster(league_id)
+        result = platform.get_my_roster(league_id)
     except Exception:
         return []
     roster = (result.get("team") or {}).get("roster") or []
@@ -42,7 +42,7 @@ def _roster_ids(league_id: str | None = None) -> list[str]:
     players = all_players()
     ids = []
     for p in roster:
-        pid = resolve_espn_player(p.get("espn_id"), p.get("name", ""), p.get("position"), players)
+        pid = resolve_roster_entry(p, players)
         if pid:
             ids.append(pid)
     return ids

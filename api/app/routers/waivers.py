@@ -7,10 +7,11 @@ from fastapi import APIRouter
 
 from ..config import current_season, league_config
 from ..etl import espn as espn_etl
+from ..etl import platform
 from ..models import projections as proj
 from ..models import vorp
 from ..models import waivers as waivers_model
-from ._common import all_players, records, resolve_espn_player
+from ._common import all_players, records, resolve_roster_entry
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/waivers", tags=["waivers"])
@@ -18,7 +19,7 @@ router = APIRouter(prefix="/waivers", tags=["waivers"])
 
 def _my_roster_ids(league_id: str | None = None) -> list[str]:
     try:
-        result = espn_etl.get_my_roster(league_id)
+        result = platform.get_my_roster(league_id)
     except Exception:
         return []
     roster = (result.get("team") or {}).get("roster") or []
@@ -27,7 +28,7 @@ def _my_roster_ids(league_id: str | None = None) -> list[str]:
     players = all_players()
     ids = []
     for p in roster:
-        pid = resolve_espn_player(p.get("espn_id"), p.get("name", ""), p.get("position"), players)
+        pid = resolve_roster_entry(p, players)
         if pid:
             ids.append(pid)
     return ids
@@ -35,6 +36,10 @@ def _my_roster_ids(league_id: str | None = None) -> list[str]:
 
 def _free_agent_ids(my_roster: list[str], season: int,
                     league_id: str | None = None) -> tuple[list[str], str | None]:
+    platform_ids, platform_warning = platform.free_agents(league_id, season)
+    if platform_ids is not None:
+        return [pid for pid in platform_ids if pid not in my_roster], platform_warning
+
     cache = espn_etl.read_cache("free_agents", league_id)
     if cache and cache.get("data"):
         players = all_players()

@@ -15,6 +15,7 @@ from app.config import (
     leagues,
     resolve_league,
 )
+from app.etl.platform import platform_of
 from app.models import vorp
 
 
@@ -43,10 +44,14 @@ def test_team_count_comes_from_the_league_entry():
         assert cfg["league"]["id"] == entry["id"]
 
 
-def test_scoring_and_roster_are_shared_across_leagues():
-    ids = league_ids()
-    base = league_config(ids[0])
-    for lid in ids[1:]:
+def test_scoring_and_roster_are_shared_across_espn_leagues():
+    """The four ESPN leagues share one commissioner ruleset; a Sleeper league
+    (different platform, different real scoring settings) legitimately
+    overrides both blocks, so this only guards leagues on the same platform."""
+    espn_ids = [lid for lid in league_ids() if platform_of(lid) == "espn"]
+    assert len(espn_ids) >= 2, "need at least two ESPN leagues to guard drift between them"
+    base = league_config(espn_ids[0])
+    for lid in espn_ids[1:]:
         other = league_config(lid)
         assert other["scoring"] == base["scoring"]
         assert other["roster"] == base["roster"]

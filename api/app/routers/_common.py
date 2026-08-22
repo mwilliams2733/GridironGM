@@ -97,3 +97,21 @@ def resolve_espn_player(espn_id, name: str, position: str | None, players: pd.Da
         except (TypeError, ValueError):
             pass
     return resolve_player_name(name, position, players)
+
+
+def resolve_roster_entry(entry: dict, players: pd.DataFrame) -> str | None:
+    """player_id for one roster row, regardless of platform shape.
+
+    Sleeper rosters (via `etl.platform.get_my_roster`) already carry a resolved
+    `player_id` -- possibly `None` when the identity cascade could not place a
+    player. ESPN rosters carry `espn_id`/`name`/`position` instead and need
+    the ESPN resolver. Checking for the `player_id` key first is required: an
+    ESPN entry has no such key, so `.get` falls through correctly, but a
+    Sleeper entry's `espn_id`/`name` keys are simply absent, and blindly
+    calling `resolve_espn_player` on it would resolve against an empty name
+    and silently overwrite an already-correct id with None.
+    """
+    if "player_id" in entry:
+        return entry["player_id"]
+    return resolve_espn_player(entry.get("espn_id"), entry.get("name", ""),
+                               entry.get("position"), players)

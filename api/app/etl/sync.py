@@ -46,19 +46,24 @@ def run_sync(scope: str = "all") -> dict:
                 from .nfl_data import sync_injuries
                 results["injuries"] = sync_injuries()
             elif name == "espn":
-                # Every configured league syncs; one unconfigured league must not
-                # stop the others, so each is reported independently.
+                # Every configured league syncs, ESPN or Sleeper alike; one
+                # unconfigured/failing league must not stop the others, so each
+                # is reported independently.
                 from ..config import league_ids
-                from .espn import espn_available, sync_espn
+                from .platform import platform_of
                 per_league = {}
                 for lid in league_ids():
-                    if not espn_available(lid):
-                        per_league[lid] = "skipped (no league_id — manual mode)"
-                        continue
                     try:
-                        per_league[lid] = sync_espn(lid)
+                        if platform_of(lid) == "sleeper":
+                            from .sleeper import sleeper_available, sync_sleeper
+                            per_league[lid] = (sync_sleeper(lid) if sleeper_available(lid)
+                                               else "skipped (no sleeper_league_id)")
+                        else:
+                            from .espn import espn_available, sync_espn
+                            per_league[lid] = (sync_espn(lid) if espn_available(lid)
+                                               else "skipped (no league_id — manual mode)")
                     except Exception as exc:
-                        log.exception("espn sync failed for %s", lid)
+                        log.exception("league sync failed for %s", lid)
                         per_league[lid] = f"error: {exc}"
                 results["espn"] = per_league
         except Exception as exc:

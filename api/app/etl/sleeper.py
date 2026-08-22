@@ -193,19 +193,80 @@ def sync_sleeper(league_id: str | None = None) -> dict:
 def _check_scoring_drift(league: dict, lid: str) -> None:
     """Warn if the commissioner changed scoring since league.yaml was authored.
 
-    A sync-time check rather than a test, because it needs the network.
+    A sync-time check rather than a test, because it needs the network. Covers
+    every scoring key this app transcribes by hand from Sleeper's league
+    settings into `league.yaml` -- the point is to catch a transcription
+    error, not just a live rule change, so every authored key that Sleeper
+    also reports must be checked, not just a handful.
+
+    A points-allowed tier is checked at its lower bound (Sleeper's own key
+    naming, e.g. `pts_allow_7_13` for our `[13, 4]` tier) against the fantasy
+    points value; tiers are matched positionally against
+    `dst.points_allowed_tiers` since Sleeper's granularity (7 buckets) matches
+    ours exactly for leagues authored this way.
     """
     live = league.get("scoring_settings") or {}
     cfg = league_config(lid)["scoring"]
     checks = {
-        "rec": cfg["receiving"]["reception"],
+        # passing
+        "pass_yd": 1 / cfg["passing"]["yards_per_point"],
         "pass_td": cfg["passing"]["touchdown"],
         "pass_int": cfg["passing"]["interception"],
+        "pass_2pt": cfg["passing"]["two_point"],
+        # rushing
+        "rush_yd": 1 / cfg["rushing"]["yards_per_point"],
         "rush_td": cfg["rushing"]["touchdown"],
+        "rush_2pt": cfg["rushing"]["two_point"],
+        # receiving
+        "rec": cfg["receiving"]["reception"],
+        "rec_yd": 1 / cfg["receiving"]["yards_per_point"],
+        "rec_td": cfg["receiving"]["touchdown"],
+        "rec_2pt": cfg["receiving"]["two_point"],
+        # misc
+        "fum_lost": cfg["misc"]["fumble_lost"],
+        # kicking (Sleeper splits 0-39 into three bands, all worth fg_0_39 here)
+        "fgm_0_19": cfg["kicking"]["fg_0_39"],
+        "fgm_20_29": cfg["kicking"]["fg_0_39"],
+        "fgm_30_39": cfg["kicking"]["fg_0_39"],
+        "fgm_40_49": cfg["kicking"]["fg_40_49"],
+        "fgm_50p": cfg["kicking"]["fg_50_plus"],
+        "fgmiss": cfg["kicking"]["fg_missed"],
+        "xpm": cfg["kicking"]["xp_made"],
+        "xpmiss": cfg["kicking"]["xp_missed"],
+        # dst
+        "sack": cfg["dst"]["sack"],
+        "int": cfg["dst"]["interception"],
+        "fum_rec": cfg["dst"]["fumble_recovery"],
+        "ff": cfg["dst"].get("forced_fumble"),
+        "def_td": cfg["dst"]["touchdown"],
+        "safe": cfg["dst"]["safety"],
+        "blk_kick": cfg["dst"]["block_kick"],
     }
     for key, ours in checks.items():
         theirs = live.get(key)
-        if theirs is not None and float(theirs) != float(ours):
+        if theirs is not None and ours is not None and float(theirs) != float(ours):
             log.warning(
                 "sleeper %s: scoring drift on %s — league.yaml has %s, Sleeper has %s",
                 lid, key, ours, theirs)
+
+    # points-allowed ladder: match Sleeper's pts_allow_* keys against our
+    # tiers by lower bound.
+    tier_keys = {
+        0: "pts_allow_0", 1: "pts_allow_1_6", 7: "pts_allow_7_13",
+        14: "pts_allow_14_20", 21: "pts_allow_21_27", 28: "pts_allow_28_34",
+        35: "pts_allow_35p",
+    }
+    tiers = (cfg.get("dst") or {}).get("points_allowed_tiers") or []
+    # tiers are [upper_bound, points]; derive each tier's lower bound from the
+    # previous tier's upper bound to match against Sleeper's *_N_M keys.
+    lower = 0
+    for upper, pts in tiers:
+        key = tier_keys.get(lower)
+        if key is not None:
+            theirs = live.get(key)
+            if theirs is not None and float(theirs) != float(pts):
+                log.warning(
+                    "sleeper %s: scoring drift on %s (points allowed tier "
+                    "starting %s) — league.yaml has %s, Sleeper has %s",
+                    lid, key, lower, pts, theirs)
+        lower = upper + 1

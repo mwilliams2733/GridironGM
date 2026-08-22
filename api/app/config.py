@@ -144,6 +144,9 @@ def league_config(league_id: str | None = None) -> dict:
     league["name"] = entry.get("name", league.get("name"))
     if entry.get("teams") is not None:
         league["teams"] = entry["teams"]
+    for key in ("playoff_week_start", "sleeper_league_id", "sleeper_draft_id", "platform"):
+        if entry.get(key) is not None:
+            league[key] = entry[key]
 
     if entry.get("draft"):
         cfg.setdefault("draft", {}).update(entry["draft"])
@@ -161,7 +164,42 @@ def league_config(league_id: str | None = None) -> dict:
         if entry.get(block):
             cfg.setdefault(block, {}).update(entry[block])
 
+    validate_league_config(cfg, lid)
     return cfg
+
+
+# Sane bound for a configured playoff start week. NFL regular season is 18
+# weeks; a league could plausibly start playoffs anywhere from week 2 (absurd
+# but not malformed) through week 18. Anything outside this is almost
+# certainly a transcription error, and `last_scoring_week` turns it into a
+# silent zero-ROS failure rather than an error, so it must fail loudly here.
+_PLAYOFF_WEEK_MIN = 1
+_PLAYOFF_WEEK_MAX = 18
+
+
+def validate_league_config(cfg: dict, league_id: str) -> None:
+    """Fail loudly at load time on config shapes that would otherwise corrupt
+    silently downstream (see `flex_slot_defs` and `last_scoring_week`)."""
+    start = cfg["league"].get("playoff_week_start")
+    if start is not None:
+        if not isinstance(start, int) or isinstance(start, bool) or not (
+            _PLAYOFF_WEEK_MIN <= start <= _PLAYOFF_WEEK_MAX
+        ):
+            raise ValueError(
+                f"league '{league_id}': playoff_week_start must be an integer in "
+                f"[{_PLAYOFF_WEEK_MIN}, {_PLAYOFF_WEEK_MAX}], got {start!r}"
+            )
+
+    flex_slots = cfg.get("roster", {}).get("flex_slots")
+    if flex_slots:
+        for label, d in flex_slots.items():
+            share = d.get("share") or {}
+            total = sum(share.values())
+            if abs(total - 1.0) > 1e-6:
+                raise ValueError(
+                    f"league '{league_id}': roster.flex_slots.{label}.share must "
+                    f"sum to 1.0, got {total!r} ({share!r})"
+                )
 
 
 def reload_config() -> dict:

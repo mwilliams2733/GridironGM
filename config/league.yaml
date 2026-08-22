@@ -120,5 +120,51 @@ leagues:
     espn_league_id: null      # TODO
     draft: { my_slot: null, rounds: 16 }
 
+  - id: sundt
+    name: "Sundt Redraft"
+    platform: sleeper
+    teams: 12
+    playoff_week_start: 15
+    sleeper_league_id: "1395500725785591808"
+    sleeper_draft_id: "1395500726964195328"
+    draft: { my_slot: 10, rounds: 17 }
+    waivers: { system: faab, faab_budget: 200 }
+    scoring:
+      passing:   { yards_per_point: 25, touchdown: 4, interception: -1, two_point: 2 }
+      rushing:   { yards_per_point: 10, touchdown: 6, two_point: 2 }
+      receiving: { reception: 1.0, yards_per_point: 10, touchdown: 6, two_point: 2 }
+      misc:      { fumble_lost: -2, return_touchdown: 6 }
+      kicking:
+        fg_0_39: 3
+        fg_40_49: 4
+        fg_50_plus: 5
+        fg_missed: -1
+        xp_made: 1
+        xp_missed: -1
+      dst:
+        sack: 1
+        interception: 2
+        fumble_recovery: 2
+        forced_fumble: 1
+        touchdown: 6
+        safety: 2
+        block_kick: 2
+        points_allowed_tiers:
+          - [0, 10]
+          - [6, 7]
+          - [13, 4]
+          - [20, 1]
+          - [27, 0]
+          - [34, -1]
+          - [999, -4]
+    roster:
+      starters: { QB: 1, RB: 2, WR: 2, TE: 1, FLEX: 1, SUPER_FLEX: 1, K: 1, DST: 1 }
+      flex_eligible: [RB, WR, TE]
+      flex_slots:
+        FLEX:       { eligible: [RB, WR, TE],     share: { RB: .45, WR: .45, TE: .10 } }
+        SUPER_FLEX: { eligible: [QB, RB, WR, TE], share: { QB: .90, RB: .04, WR: .04, TE: .02 } }
+      bench: 7
+      ir: 2
+
 # League selected when a request does not name one.
 active: league1

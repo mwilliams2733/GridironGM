@@ -9,21 +9,22 @@ from pydantic import BaseModel
 from ..config import current_season, league_config
 from ..db import read_df
 from ..etl import espn as espn_etl
+from ..etl import platform
 from ..models import projections as proj
-from ._common import all_players, records, resolve_espn_player, resolve_player_name
+from ._common import all_players, records, resolve_player_name, resolve_roster_entry
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/league", tags=["league"])
 
 
 def _resolve_roster_players(roster: list[dict]) -> list[dict]:
-    """Attach player_id to each roster entry via espn_id or name match."""
+    """Attach player_id to each roster entry, regardless of platform shape."""
     if not roster:
         return []
     players = all_players()
     out = []
     for p in roster:
-        pid = resolve_espn_player(p.get("espn_id"), p.get("name", ""), p.get("position"), players)
+        pid = resolve_roster_entry(p, players)
         out.append({**p, "player_id": pid})
     return out
 
@@ -31,7 +32,7 @@ def _resolve_roster_players(roster: list[dict]) -> list[dict]:
 @router.get("/roster")
 def get_roster(league_id: str | None = None) -> dict:
     try:
-        result = espn_etl.get_my_roster(league_id)
+        result = platform.get_my_roster(league_id)
     except Exception as exc:
         log.warning("get_my_roster failed: %s", exc)
         return {"mode": "none", "team": {"name": "My Team", "roster": []}, "warning": str(exc)}

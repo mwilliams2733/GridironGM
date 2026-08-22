@@ -22,7 +22,7 @@ DEF_ROWS = pd.DataFrame([
 def test_dst_scores_through_the_leagues_own_points_allowed_ladder():
     """17 allowed is worth 1 point in the ESPN ladder and 1 in Sleeper's, but a
     shutout is worth 5 vs 10 — so the ladders must not be shared."""
-    espn = league_config()
+    espn = league_config("league1")  # explicit: this test's numbers are ESPN's ladder
     sleeper = copy.deepcopy(espn)
     sleeper["scoring"]["dst"]["points_allowed_tiers"] = [
         [0, 10], [6, 7], [13, 4], [20, 1], [27, 0], [34, -1], [999, -4]]
@@ -38,7 +38,7 @@ def test_dst_per_season_aggregates_games_and_ppg():
     # safety=2, block_kick=2; points_allowed_tiers has [17, 1] (<=17 allowed -> 1).
     # DEF_ROWS: 3 sacks + 1 INT + 1 fumble_recovery_opp + 17 allowed, per game:
     #   3*1 + 1*2 + 1*2 + 0*6 + 0*2 + 0*2 + 1 (PA tier) = 3 + 2 + 2 + 1 = 8.0
-    out = _dst_per_season(DEF_ROWS, league_config())
+    out = _dst_per_season(DEF_ROWS, league_config("league1"))  # explicit: 8.0 is ESPN's ladder
     row = out.iloc[0]
     assert row["games"] == 5
     assert row["season"] == 2025
