@@ -61,6 +61,14 @@ def resolve_player_name(name: str, position: str | None, players: pd.DataFrame) 
         if dst:
             return dst
     key = norm_name(name)
+    if not key:
+        # An empty/whitespace-only name is not a query that failed to match
+        # anything -- it is no query at all. Return early: the exact-match
+        # branch below would spuriously match any player whose norm is also
+        # empty, and the fuzzy branch's `players[... if key else False]`
+        # indexes the DataFrame with the bare boolean False and raises
+        # KeyError rather than returning "no match".
+        return None
     cand = players[players.norm == key]
     if position:
         pos_cand = cand[cand.position == position]

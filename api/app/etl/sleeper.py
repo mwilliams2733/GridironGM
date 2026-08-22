@@ -94,14 +94,10 @@ def resolve_sleeper_player(entry: dict, players: pd.DataFrame,
         except (TypeError, ValueError):
             pass
 
-    full_name = entry.get("full_name")
-    if not full_name:
-        # Sleeper uses "0" as a placeholder for an empty starter slot; the
-        # player map has no entry for it, so there is no name to match on.
-        # An empty search key isn't "no match", it's "no query" -- return
-        # None rather than handing resolve_player_name a blank string.
-        return None
-    return resolve_player_name(full_name, pos, players)
+    # resolve_player_name itself returns None for an empty/whitespace name --
+    # e.g. Sleeper's "0" placeholder for an empty starter slot, which has no
+    # entry in the player map and so no full_name to match on.
+    return resolve_player_name(entry.get("full_name") or "", pos, players)
 
 
 def _espn_lut(players: pd.DataFrame) -> dict:
