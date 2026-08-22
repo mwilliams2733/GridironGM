@@ -104,6 +104,10 @@ def score_dst(stats: Mapping, cfg: dict | None = None) -> float:
     pts += _num(stats, "def_sacks") * d["sack"]
     pts += _num(stats, "def_interceptions") * d["interception"]
     pts += _num(stats, "fumble_recovery_opp") * d["fumble_recovery"]
+    # Sleeper scores the forced fumble separately from the recovery. The ESPN
+    # configs have no `forced_fumble` key at all, so this must degrade to 0
+    # rather than KeyError -- `.get`, not `d[...]`.
+    pts += _num(stats, "def_fumbles_forced") * d.get("forced_fumble", 0)
     pts += (_num(stats, "def_tds") + _num(stats, "special_teams_tds")) * d["touchdown"]
     pts += _num(stats, "def_safeties") * d["safety"]
     pts += (

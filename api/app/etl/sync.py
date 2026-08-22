@@ -77,6 +77,11 @@ def run_sync(scope: str = "all") -> dict:
     proj._players.cache_clear()
     proj._snaps.cache_clear()
     proj._completed_seasons.cache_clear()
+    # `_players_indexed` is the ADP name-resolution index. A sync that adds
+    # players leaves it stale, so `resolve_adp` matches against the PRE-sync
+    # players table -- the exact failure this block exists to prevent.
+    from ..models import vorp as vorp_model
+    vorp_model._players_indexed.cache_clear()
     from ..routers import draft as draft_router
     draft_router._season_proj_cache.clear()
 

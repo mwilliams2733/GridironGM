@@ -56,3 +56,57 @@ def test_kicker_per_season_aggregates_games_and_ppg():
     out = _kicker_per_season(k, league_config("league1"))  # explicit: ESPN's kicking scoring
     assert out.iloc[0]["games"] == 4
     assert out.iloc[0]["ppg"] == 9.0  # 3 + 4 + 2
+
+
+# ---------------------------------------------------------------------------
+# forced_fumble: configured for Sundt, drift-checked against Sleeper, ingested
+# as `def_fumbles_forced` -- and, until this fix, never scored. The drift check
+# gave false assurance while every Sundt DST ran systematically low.
+# ---------------------------------------------------------------------------
+from app.scoring import score_dst
+
+
+def _dst_row(forced: int) -> dict:
+    return {"def_sacks": 0, "def_interceptions": 0, "def_fumbles_forced": forced,
+            "fumble_recovery_opp": 0, "def_tds": 0, "def_safeties": 0,
+            "def_punt_blocks": 0, "def_pat_blocks": 0, "def_fg_blocks": 0,
+            "special_teams_tds": 0, "points_allowed": 17}
+
+
+def test_forced_fumbles_score_when_the_league_prices_them():
+    sundt = league_config("sundt")
+    assert sundt["scoring"]["dst"]["forced_fumble"] == 1, "premise: Sundt prices it"
+    delta = score_dst(_dst_row(5), sundt) - score_dst(_dst_row(0), sundt)
+    assert delta == 5.0
+
+
+def test_a_league_with_no_forced_fumble_key_scores_them_at_zero():
+    """ESPN configs have no `forced_fumble` key: degrade to 0, never KeyError."""
+    espn = league_config("league1")
+    assert "forced_fumble" not in espn["scoring"]["dst"]
+    assert score_dst(_dst_row(5), espn) == score_dst(_dst_row(0), espn)
+
+
+# ---------------------------------------------------------------------------
+# Postseason contamination: kicking_stats/team_defense hold weeks up to 22, and
+# the K/DST history reads had no week filter while the offensive path did.
+# ---------------------------------------------------------------------------
+import app.models.projections as pr
+
+
+def test_kdst_history_ignores_postseason_weeks(monkeypatch):
+    reg = pr._project_k_dst_season(2026)
+    monkeypatch.setattr(pr, "REG_SEASON_WEEKS", 22)   # let the playoffs back in
+    contaminated = pr._project_k_dst_season(2026)
+
+    def _pts(df, pid):
+        row = df[df.player_id == pid]
+        return float(row.iloc[0]["proj_points"]) if not row.empty else None
+
+    # A team that played deep into January gains games and points when the
+    # filter is removed; the filtered projection must be the lower one.
+    hou_reg, hou_all = _pts(reg, "DST_HOU"), _pts(contaminated, "DST_HOU")
+    assert hou_reg is not None and hou_all is not None
+    assert hou_all > hou_reg, (
+        "premise: the DB really does hold postseason DST weeks — "
+        f"reg={hou_reg} all={hou_all}")

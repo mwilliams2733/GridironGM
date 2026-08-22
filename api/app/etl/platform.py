@@ -25,15 +25,26 @@ def get_my_roster(league_id: str | None = None) -> dict:
         cache = sleeper.read_cache("teams", lid)
         if not cache:
             return {"mode": "none", "team": {"name": "My Team", "roster": []}}
-        slot = (league_config(lid).get("draft") or {}).get("my_slot")
         rosters = cache["data"]
-        mine = next((r for r in rosters if r["roster_id"] == slot), None)
-        if mine is None:
+        # Match on owner_id, NOT roster_id and emphatically not `draft.my_slot`
+        # (a snake DRAFT slot, unrelated to roster ids -- both are 1..teams, so
+        # confusing them returns another manager's roster with no error at all).
+        # owner_id is also stable if a commissioner rebuilds the league.
+        user_id = league_config(lid)["league"].get("sleeper_user_id")
+        if not user_id:
             log.warning(
-                "sleeper %s: draft.my_slot=%r matches no synced roster_id — "
-                "falling back to roster_id=%s. Set draft.my_slot in league.yaml.",
-                lid, slot, rosters[0]["roster_id"])
-            mine = rosters[0]
+                "sleeper %s: no sleeper_user_id configured — cannot identify my "
+                "roster. Set leagues[%s].sleeper_user_id in league.yaml.", lid, lid)
+            return {"mode": "none", "team": {"name": "My Team", "roster": []}}
+        mine = next(
+            (r for r in rosters if str(r.get("owner_id")) == str(user_id)), None)
+        if mine is None:
+            # Never fall through to another roster: a silently wrong team is far
+            # worse than a loud failure on every Sundt surface.
+            raise LookupError(
+                f"sleeper {lid}: sleeper_user_id={user_id!r} owns none of the "
+                f"{len(rosters)} synced rosters "
+                f"(owners: {[r.get('owner_id') for r in rosters]})")
         return {"mode": "sleeper", "team": {
             "name": mine["name"],
             "roster": [{"player_id": p} for p in mine["players"]],

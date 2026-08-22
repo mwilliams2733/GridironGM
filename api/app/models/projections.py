@@ -173,6 +173,10 @@ def _score_weekly(df: pd.DataFrame, cfg: dict | None) -> pd.DataFrame:
     """Attach an `fp` column scored for ``cfg``'s league to a raw stat frame."""
     from ..scoring import score_frame
 
+    # The .copy() is LOAD-BEARING, not defensive habit: `_weekly_raw` returns the
+    # `@lru_cache`d frame itself, unwrapped. Without the copy, scoring one league
+    # writes `fp` into the shared cached frame and the next league to ask for the
+    # same seasons reads the previous league's points. Do not "clean this up".
     df = df.copy()
     if df.empty:
         return df
@@ -466,18 +470,26 @@ def _project_k_dst_season(season: int, cfg: dict | None = None) -> pd.DataFrame:
     else is aggregated. The Vegas signal is NOT discarded: it remains the
     matchup factor applied by `project_week` and `project_ros`.
 
-    `usage_trend` is meaningless for these positions; `opp_pg` is set equal to
-    `ppg` so the trend ratio is 1.0 and the term drops out.
+    `usage_trend` is meaningless for these positions, so both callers pass
+    `trend=False`, which pins the ratio at 1.0. `opp_pg` is set equal to `ppg`
+    only to satisfy the column contract -- it does NOT by itself make the ratio
+    inert (see `_weight_seasons`), which is precisely why `trend=False` exists.
     """
     cfg = cfg or league_config()
     seasons = _completed_seasons(season)
     placeholders = ",".join("?" for _ in seasons)
     newest = max(seasons)
 
+    # `week <= REG_SEASON_WEEKS` is load-bearing: both tables hold weeks up to 22
+    # (postseason), and the offensive path filters them out. Without it a team
+    # that made a deep playoff run gets extra games folded into its per-season
+    # `games`/`ppg`, inflating the projection (HOU DST measured 137.8 vs 121.9).
     kdf = read_df(
-        f"SELECT * FROM kicking_stats WHERE season IN ({placeholders})", tuple(seasons))
+        f"SELECT * FROM kicking_stats WHERE season IN ({placeholders}) "
+        f"AND week <= {REG_SEASON_WEEKS}", tuple(seasons))
     ddf = read_df(
-        f"SELECT * FROM team_defense WHERE season IN ({placeholders})", tuple(seasons))
+        f"SELECT * FROM team_defense WHERE season IN ({placeholders}) "
+        f"AND week <= {REG_SEASON_WEEKS}", tuple(seasons))
 
     players = _players().set_index("player_id")
     rows = []
@@ -731,7 +743,11 @@ def project_week(season: int, week: int, store: bool = False,
 def project_ros(season: int, week: int, store: bool = False,
                 season_proj: pd.DataFrame | None = None,
                 cfg: dict | None = None) -> pd.DataFrame:
-    """Remaining-schedule aggregate (weeks ``week``..18).
+    """Remaining-schedule aggregate (weeks ``week``..``last_scoring_week(cfg)``).
+
+    The horizon is the last week that counts toward making the playoffs, NOT
+    week 18: for a league configuring ``playoff_week_start: 15`` it is week 14.
+    Absent that key it IS week 18, so leagues that never set it are unchanged.
 
     Walks each remaining week individually, applying the full shared matchup chain
     (``_matchup_factor``: opponent DvP, Vegas game environment, game script, home

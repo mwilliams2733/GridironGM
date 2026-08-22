@@ -14,20 +14,26 @@ from ..etl import espn as espn_etl
 from ..models import mocksim
 from ..models import projections as proj
 from ..models import vorp
+from ..scoring import profile_key
 from ._common import all_players, records, resolve_espn_player
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/draft", tags=["draft"])
 
-# Season projections are league-agnostic (scoring is shared), so this cache is
-# keyed by season only and is reused across all leagues.
-_season_proj_cache: dict[int, "object"] = {}
+# Season projections are NOT league-agnostic: this branch gave Sundt its own
+# scoring block (full PPR, -1 INT), so a cache keyed by season alone would hand
+# one league's projections to another. Keyed by (season, scoring profile) so
+# leagues that genuinely share a scoring block still share one computation --
+# which is every ESPN league here -- while a differing block gets its own entry.
+_season_proj_cache: dict[tuple[int, str], "object"] = {}
 
 
-def _season_proj(season: int):
-    if season not in _season_proj_cache:
-        _season_proj_cache[season] = proj.project_season(season)
-    return _season_proj_cache[season]
+def _season_proj(season: int, cfg: dict | None = None):
+    cfg = cfg or league_config()
+    key = (season, profile_key(cfg))
+    if key not in _season_proj_cache:
+        _season_proj_cache[key] = proj.project_season(season, cfg=cfg)
+    return _season_proj_cache[key]
 
 
 def _default_state() -> dict:
@@ -136,7 +142,7 @@ def get_board(limit: int = 50, league_id: str | None = None, mock: bool = False)
     state = _load_state(lid, mock)
     cfg = league_config(lid)
     season = current_season()
-    season_proj = _season_proj(season)
+    season_proj = _season_proj(season, cfg)
 
     drafted = _drafted_ids(state)
     my_roster = _my_roster(state)
@@ -211,7 +217,7 @@ def _build_pick(state: dict, cfg: dict, player_id: str, slot: int | None,
     else:
         assigned = auto_slot
 
-    season_proj = _season_proj(current_season())
+    season_proj = _season_proj(current_season(), cfg)
     meta = season_proj[season_proj.player_id == player_id]
     pos = meta.iloc[0].position if not meta.empty else None
     name = meta.iloc[0]["name"] if not meta.empty else player_id
@@ -305,7 +311,7 @@ def post_simulate(body: SimulateBody | None = None, league_id: str | None = None
     season = current_season()
     board = vorp.vorp_board(
         drafted_ids=_drafted_ids(state), my_roster=_my_roster(state), season=season,
-        season_proj=_season_proj(season), pick_number=len(state["picks"]) + 1, cfg=cfg,
+        season_proj=_season_proj(season, cfg), pick_number=len(state["picks"]) + 1, cfg=cfg,
     )
     if board.empty:
         return {"added": 0, "picks": [], "stopped": "no_board",
@@ -386,7 +392,7 @@ def post_sync_espn(league_id: str | None = None) -> dict:
     existing_players = _drafted_ids(state)
 
     players = all_players()
-    season_proj = _season_proj(current_season())
+    season_proj = _season_proj(current_season(), cfg)
     slot_by_espn_team = {}
     for p in espn_picks:
         if p["round"] == 1 and p["round_pick"] and p["espn_team_id"] is not None:
@@ -441,7 +447,7 @@ def get_recommendation(league_id: str | None = None, mock: bool = False) -> dict
     state = _load_state(lid, mock)
     cfg = league_config(lid)
     season = current_season()
-    season_proj = _season_proj(season)
+    season_proj = _season_proj(season, cfg)
     drafted = _drafted_ids(state)
     my_roster = _my_roster(state)
     current_pick = len(state["picks"]) + 1
@@ -466,9 +472,9 @@ def get_recommendation(league_id: str | None = None, mock: bool = False) -> dict
 def get_my_roster_endpoint(league_id: str | None = None, mock: bool = False) -> dict:
     lid = resolve_league(league_id)
     state = _load_state(lid, mock)
-    season = current_season()
-    season_proj = _season_proj(season)
     cfg = league_config(lid)
+    season = current_season()
+    season_proj = _season_proj(season, cfg)
     starters = cfg["roster"]["starters"]
     flex_elig = cfg["roster"]["flex_eligible"]
 

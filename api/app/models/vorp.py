@@ -233,7 +233,7 @@ def vorp_board(drafted_ids: set[str] | None = None,
     cfg = cfg or league_config()
     season = season or int(cfg["league"]["season"])
     if season_proj is None:
-        season_proj = proj.project_season(season)
+        season_proj = proj.project_season(season, cfg=cfg)
 
     repl = replacement_points(season_proj, cfg)
     adp = resolve_adp(season)
@@ -279,8 +279,15 @@ def vorp_board(drafted_ids: set[str] | None = None,
 
     # Unfilled starter slots per position, given what I've already drafted.
     def _unfilled(pos: str) -> int:
-        need_starters = starters.get(pos, 0) + (starters.get("FLEX", 0)
-                                                if pos in cfg["roster"]["flex_eligible"] else 0)
+        # Flex demand comes from `flex_slot_defs` -- the same source
+        # `replacement_levels` and `slot_plan` use -- not a hardcoded "FLEX"
+        # against `flex_eligible`. A superflex league's second QB starter is
+        # invisible to the hardcoded form, so the board reports a starting QB
+        # as surplus.
+        need_starters = starters.get(pos, 0)
+        for label, d in flex_slot_defs(cfg).items():
+            if pos in d["eligible"]:
+                need_starters += starters.get(label, 0)
         return max(0, need_starters - my_pos_count.get(pos, 0))
 
     board["unfilled"] = board.position.map(_unfilled)

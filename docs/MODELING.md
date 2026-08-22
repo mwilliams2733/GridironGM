@@ -287,12 +287,14 @@ Players on a bye or whose team isn't scheduled that week are omitted from the we
 
 ## 3. Rest-of-season — `project_ros(season, week)`
 
-Walks weeks `week..18` **individually**, applying the full shared matchup chain (§2) to each and
-summing:
+Walks weeks `week..last_scoring_week(cfg)` **individually**, applying the full shared matchup
+chain (§2) to each and summing. The horizon is the last week that counts toward making the
+playoffs, NOT week 18: a league with `playoff_week_start: 15` stops at week 14 (see §10.5).
+Leagues that do not configure `playoff_week_start` keep the full 18-week regular season.
 
 ```
 proj_ros = season_proj_ppg × Σ  matchup_factor(week)
-                             w = week..18, weeks the team actually plays
+                             w = week..last_scoring_week, weeks the team actually plays
 
 matchup_factor(w) = dvp(opp, pos) × game_env(w) × script(w) × home(w)
 ```
@@ -350,8 +352,10 @@ floor/ceiling = proj_points × 0.80 / 1.20
   ride `scoring_terms`/`score_frame` and is scored separately) and grouped by `(team, season)`.
   No `base_ppg <= 0` guard: a defense that gives up a lot can legitimately average a negative
   score under a tiered ladder — that is real signal, not a data artifact.
-- `usage_trend` is meaningless for these positions, so `opp_pg` is set equal to `ppg` for both,
-  which forces the trend ratio to 1.0 and drops the term out of `_weight_seasons`.
+- `usage_trend` is meaningless for these positions, so both callers pass `trend=False`, which
+  pins the ratio at 1.0. Setting `opp_pg = ppg` does NOT by itself make the ratio inert — a
+  team or kicker whose ppg genuinely varies year to year still yields a non-1.0 ratio — which
+  is exactly why `trend=False` exists rather than relying on a degenerate input.
 - **The Vegas signal is not discarded** — it remains the shared matchup factor (§2/§3) that
   `project_week`/`project_ros` apply on top of this history-driven baseline: K keeps the
   offensive form (more scoring drives → more FG/XP attempts) and DST inverts on the opponent's
@@ -607,9 +611,17 @@ of the history baseline (§4):
 
 | Week | K N | K MAE | DST N | DST MAE |
 |------|-----|-------|-------|---------|
-| 2025 wk 6  | 26 | 4.18 | 30 | 3.49 |
-| 2025 wk 10 | 23 | 3.81 | 28 | 3.62 |
-| 2025 wk 14 | 24 | 3.98 | 28 | 4.29 |
+| 2025 wk 6  | 26 | 4.16 | 30 | 3.52 |
+| 2025 wk 10 | 23 | 3.76 | 28 | 3.73 |
+| 2025 wk 14 | 24 | 4.06 | 28 | 4.35 |
+
+**Re-measured 2026-08-22** after fixing a postseason contamination bug: the K/DST history reads
+(`kicking_stats`/`team_defense` in `_project_k_dst_season`) had no `week <= 18` filter while the
+offensive path did, so weeks 19-22 were folded into each team's per-season `games`/`ppg`.
+Deep-playoff teams were inflated the most — HOU DST projected **137.8 before, 121.9 after**
+(-11.5%). The table above is the post-fix measurement; the pre-fix figures were
+4.18/3.81/3.98 (K) and 3.49/3.62/4.29 (DST). The change is within noise at this sample size
+and does not move the verdict.
 
 Command (shown for week 10; weeks 6/14 substitute the week number):
 
@@ -634,11 +646,11 @@ print('DST n=%d MAE=%.2f' % (len(m2), (m2.proj_points-m2.actual).abs().mean()))
 ```
 
 **Verdict: the history model is a clear improvement, not a regression.** K MAE averages ~4.0,
-DST MAE ~3.8 across the three sampled weeks — both comfortably under the ~4.5 threshold that
+DST MAE ~3.9 across the three sampled weeks — both comfortably under the ~4.5 threshold that
 would flag the history model as worse than the anchor it replaced, and both are *tighter* than
 several offensive positions (QB, RB) in §8.2's table. DST in particular was the position most at
 risk (the old anchor was a single Vegas variable with no defensive history at all), and its MAE
-(3.49–4.29, no monotonic trend across weeks) shows no sign of being worse than a one-variable
+(3.52–4.35, no monotonic trend across weeks) shows no sign of being worse than a one-variable
 model would have been. Caveat: this is 3 weeks (n=23–30 per position per week), not
 independent draws — all three weeks share the same 2-3 season history window and the same
 league scoring rules, so this is a first baseline, not a large-sample proof; a fuller

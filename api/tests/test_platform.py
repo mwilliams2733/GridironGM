@@ -196,3 +196,141 @@ def test_run_sync_espn_scope_isolates_one_leagues_failure(monkeypatch):
 
     assert out["espn"]["espn_lg"] == {"platform": "espn", "lid": "espn_lg"}
     assert "error: sleeper API down" in out["espn"]["sleeper_lg"]
+
+
+# ---------------------------------------------------------------------------
+# get_my_roster, Sleeper branch. Previously untested entirely, which is how it
+# shipped matching `draft.my_slot` (a snake DRAFT slot) against `roster_id`:
+# both are 1..teams, so it silently returned a stranger's roster and the
+# `None` fallback never fired.
+# ---------------------------------------------------------------------------
+import json
+from pathlib import Path
+
+from app.etl import platform as platform_mod
+
+SLEEPER_FIXTURE = Path(__file__).parent / "fixtures" / "sleeper_roster.json"
+MY_SLEEPER_USER_ID = "1396235398669176832"   # owns roster_id 12
+
+
+def _sleeper_teams_cache():
+    """The `teams` cache shape `sync_sleeper` writes, built from the fixture."""
+    raw = json.loads(SLEEPER_FIXTURE.read_text(encoding="utf-8"))
+    return {"data": [{
+        "roster_id": r["roster_id"],
+        "owner_id": r["owner_id"],
+        "name": f"Team {r['roster_id']}",
+        "players": r["players"],
+        "starters": r["starters"],
+        "faab_used": r["settings"]["waiver_budget_used"],
+        "unresolved": [],
+    } for r in raw]}
+
+
+def _patch_cache(monkeypatch):
+    import app.etl.sleeper as sleeper_mod
+    monkeypatch.setattr(sleeper_mod, "read_cache",
+                        lambda name, lid=None: _sleeper_teams_cache())
+
+
+def test_sleeper_roster_is_the_one_owned_by_the_configured_user(monkeypatch):
+    """End-to-end: league.yaml's sleeper_user_id must survive config.py's
+    per-league copy loop and select the roster that user owns."""
+    _patch_cache(monkeypatch)
+    assert league_config("sundt")["league"]["sleeper_user_id"] == MY_SLEEPER_USER_ID
+    out = platform_mod.get_my_roster("sundt")
+    assert out["mode"] == "sleeper"
+    assert out["team"]["name"] == "Team 12"
+
+
+def test_sleeper_roster_is_not_selected_by_the_draft_slot(monkeypatch):
+    """The regression this fixes: my_slot=10 is a draft slot, and roster_id 10
+    exists and belongs to someone else."""
+    _patch_cache(monkeypatch)
+    assert (league_config("sundt").get("draft") or {}).get("my_slot") == 10
+    assert platform_mod.get_my_roster("sundt")["team"]["name"] != "Team 10"
+
+
+def test_an_owner_id_matching_no_roster_raises(monkeypatch):
+    """Silent-wrong is the defect. Loud-wrong is acceptable; falling through to
+    another manager's roster is not."""
+    _patch_cache(monkeypatch)
+    monkeypatch.setattr(platform_mod, "league_config", lambda lid=None: {
+        "league": {"platform": "sleeper", "sleeper_user_id": "nobody"}})
+    with pytest.raises(LookupError, match="owns none"):
+        platform_mod.get_my_roster("sundt")
+
+
+def test_a_league_with_no_sleeper_user_id_returns_an_empty_roster(monkeypatch):
+    """Degrade to 'no roster', never to rosters[0]."""
+    _patch_cache(monkeypatch)
+    monkeypatch.setattr(platform_mod, "league_config", lambda lid=None: {
+        "league": {"platform": "sleeper"}})
+    out = platform_mod.get_my_roster("sundt")
+    assert out["team"]["roster"] == []
+    assert out["team"]["name"] != "Team 1"
+
+
+# ---------------------------------------------------------------------------
+# I8: a per-league override of a shared block must MERGE, not replace. A
+# shallow `dict.update` drops every sibling key the override omits, with no
+# error until something downstream KeyErrors on a key that was always there.
+# ---------------------------------------------------------------------------
+def test_a_partial_roster_override_keeps_the_shared_siblings():
+    from app.config import _deep_merge
+
+    base = {"starters": {"QB": 1, "RB": 2}, "flex_eligible": ["RB", "WR", "TE"],
+            "bench": 6, "ir": 1}
+    merged = _deep_merge(base, {"starters": {"QB": 2}})
+    assert merged["bench"] == 6 and merged["ir"] == 1
+    assert merged["flex_eligible"] == ["RB", "WR", "TE"]
+    assert merged["starters"] == {"QB": 2, "RB": 2}, "nested keys merge too"
+
+
+def test_a_partial_scoring_override_keeps_the_other_scoring_blocks():
+    from app.config import _deep_merge
+
+    base = {"passing": {"touchdown": 4, "interception": -2},
+            "receiving": {"reception": 0.5}}
+    merged = _deep_merge(base, {"receiving": {"reception": 1.0}})
+    assert merged["passing"] == {"touchdown": 4, "interception": -2}
+    assert merged["receiving"]["reception"] == 1.0
+
+
+def test_lists_are_replaced_wholesale_not_concatenated():
+    from app.config import _deep_merge
+
+    merged = _deep_merge({"tiers": [[0, 5], [999, -4]]}, {"tiers": [[0, 10]]})
+    assert merged["tiers"] == [[0, 10]]
+
+
+def test_the_shipped_sundt_config_still_carries_every_roster_key():
+    """End-to-end: the real config must not lose a key to the merge change."""
+    roster = league_config("sundt")["roster"]
+    for key in ("starters", "flex_eligible", "flex_slots", "bench", "ir"):
+        assert key in roster
+    assert roster["starters"]["SUPER_FLEX"] == 1
+    assert league_config("sundt")["waivers"]["faab_budget"] == 200
+
+
+def test_league_config_merges_a_partial_block_at_the_call_site(monkeypatch):
+    """Call-site guard, not just `_deep_merge` in isolation: `league_config`
+    itself must deep-merge, so reverting it to `dict.update` fails here."""
+    import app.config as config_mod
+
+    fake = {"id": "partial_lg", "name": "Partial", "teams": 12,
+            "roster": {"starters": {"QB": 2}},
+            "scoring": {"receiving": {"reception": 1.0}}}
+    monkeypatch.setattr(config_mod, "leagues", lambda: (fake,))
+    config_mod.league_config.cache_clear()
+    try:
+        cfg = config_mod.league_config("partial_lg")
+        # siblings the override never mentioned must survive
+        assert "bench" in cfg["roster"] and "flex_eligible" in cfg["roster"]
+        assert cfg["roster"]["starters"]["RB"] == 2      # shared key kept
+        assert cfg["roster"]["starters"]["QB"] == 2      # override applied
+        assert "passing" in cfg["scoring"] and "dst" in cfg["scoring"]
+        assert cfg["scoring"]["receiving"]["reception"] == 1.0
+        assert cfg["scoring"]["receiving"]["touchdown"] == 6
+    finally:
+        config_mod.league_config.cache_clear()

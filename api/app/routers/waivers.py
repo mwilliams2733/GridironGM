@@ -17,11 +17,21 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/waivers", tags=["waivers"])
 
 
+class RosterUnavailable(Exception):
+    """The league's roster could not be read.
+
+    Never swallowed into an empty roster: with no roster, `worst_drop_val` is
+    0.0, so every free agent's "upgrade" is his full ROS value and FAAB bids
+    are sized against nothing -- plausible-looking output from a failed read.
+    """
+
+
 def _my_roster_ids(league_id: str | None = None) -> list[str]:
     try:
         result = platform.get_my_roster(league_id)
-    except Exception:
-        return []
+    except Exception as exc:
+        log.warning("waivers: roster read failed for league %s: %s", league_id, exc)
+        raise RosterUnavailable(str(exc)) from exc
     roster = (result.get("team") or {}).get("roster") or []
     if not roster:
         return []
@@ -82,7 +92,11 @@ def _faab_remaining(league_id: str | None) -> float | None:
 @router.get("/rankings")
 def get_rankings(week: int = 1, league_id: str | None = None) -> dict:
     season = current_season()
-    my_roster = _my_roster_ids(league_id)
+    try:
+        my_roster = _my_roster_ids(league_id)
+    except RosterUnavailable as exc:
+        return {"rankings": [],
+                "warning": f"roster unavailable — rankings would be meaningless: {exc}"}
     fa_ids, warning = _free_agent_ids(my_roster, season, league_id)
     if not fa_ids:
         return {"rankings": [], "warning": warning or "no free agents available"}
@@ -90,7 +104,8 @@ def get_rankings(week: int = 1, league_id: str | None = None) -> dict:
     faab_remaining = _faab_remaining(league_id)
     try:
         df = waivers_model.rank_free_agents(fa_ids, my_roster, season, week,
-                                            faab_remaining=faab_remaining)
+                                            faab_remaining=faab_remaining,
+                                            cfg=league_config(league_id))
     except Exception as exc:
         log.warning("rank_free_agents failed: %s", exc)
         return {"rankings": [], "warning": str(exc)}

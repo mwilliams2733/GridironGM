@@ -126,6 +126,10 @@ leagues:
     teams: 12
     playoff_week_start: 15
     sleeper_league_id: "1395500725785591808"
+    # Sleeper user_id of the owner of MY roster. Stable across a commissioner
+    # rebuild in a way roster_id is not; `draft.my_slot` is a DRAFT slot and is
+    # NOT a roster id -- matching on it silently returns another manager's team.
+    sleeper_user_id: "1396235398669176832"
     sleeper_draft_id: "1395500726964195328"
     draft: { my_slot: 10, rounds: 17 }
     waivers: { system: faab, faab_budget: 200 }

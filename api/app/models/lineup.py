@@ -1,15 +1,19 @@
 """Start/Sit optimizer: the highest-projected legal lineup for a given week.
 
-``optimize`` fills the config's starter slots (QB/RB/WR/TE/FLEX/K/DST) to maximize
+``optimize`` fills the slots the league config declares -- fixed positions plus
+every flex-type slot in `roster.flex_slots` (FLEX, SUPER_FLEX, ...) -- to maximize
 total projected points, reports bench, the delta vs a supplied current lineup,
 per-player start confidence (from projection variance), and the two closest
-start/sit calls.
+start/sit calls. The slot set is NOT hardcoded: see `slot_plan`.
 
-Optimality: with position-exclusive slots and a single FLEX that accepts any
-flex-eligible leftover, filling each fixed position with its top-N projected
-players and then assigning FLEX to the best remaining eligible player is provably
-optimal (each fixed slot is independent; FLEX can only improve by taking the best
-unused eligible). The smoke block verifies this against brute-force enumeration.
+Optimality: slots are filled greedily in ascending order of eligibility breadth
+(most restrictive first). With a single FLEX this is the obvious argument -- each
+fixed slot is independent and FLEX can only improve by taking the best unused
+eligible player. With FLEX (RB/WR/TE) nested inside SUPER_FLEX (QB/RB/WR/TE) the
+eligibility family is laminar, and restrictive-first greedy is optimal on a
+laminar family too; filling the WIDER slot first is not (see `slot_plan`'s
+counterexample). `_brute_force_best` verifies this against exhaustive assignment
+for both slot sets.
 """
 from __future__ import annotations
 
@@ -99,7 +103,10 @@ def optimize(roster_ids: list[str], season: int, week: int,
     cfg = cfg or league_config()
 
     if week_proj is None:
-        week_proj = proj.project_week(season, week)
+        # `cfg` is load-bearing here: without it the slot plan below is the
+        # caller's league (SUPER_FLEX and all) while every projection is the
+        # ACTIVE league's scoring -- half-PPR numbers in a full-PPR lineup.
+        week_proj = proj.project_week(season, week, cfg=cfg)
     pw = week_proj[week_proj.player_id.isin(roster_ids)].copy()
     recs = {r.player_id: {"player_id": r.player_id, "name": r["name"],
                           "position": r.position, "team": r.get("team"),

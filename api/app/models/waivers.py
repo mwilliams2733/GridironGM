@@ -39,23 +39,24 @@ def _starters_needed(cfg: dict) -> dict[str, int]:
 
 
 def _my_lineup_split(my_roster, ros, cfg):
-    """Split my roster into projected starters vs bench, by ROS value and slots."""
-    starters = cfg["roster"]["starters"]
-    flex_elig = cfg["roster"]["flex_eligible"]
+    """Split my roster into projected starters vs bench, by ROS value and slots.
+
+    Slots come from `lineup.slot_plan(cfg)` -- the SAME source the optimizer
+    uses -- rather than a hardcoded fixed-positions loop plus `FLEX`. Derived,
+    not duplicated: a hardcoded `starters.get("FLEX", 0)` cannot see Sundt's
+    SUPER_FLEX, so a starting superflex QB lands on the bench and becomes a
+    drop candidate.
+    """
+    from .lineup import slot_plan
+
     ros_my = ros[ros.player_id.isin(my_roster)].copy().sort_values(
         "proj_points", ascending=False)
-    used = set()
-    # fill fixed slots
-    for pos in ("QB", "RB", "WR", "TE", "K", "DST"):
-        need = starters.get(pos, 0)
-        pool = ros_my[(ros_my.position == pos) & (~ros_my.player_id.isin(used))]
-        for pid in pool.head(need).player_id:
-            used.add(pid)
-    # flex
-    flexn = starters.get("FLEX", 0)
-    fpool = ros_my[(ros_my.position.isin(flex_elig)) & (~ros_my.player_id.isin(used))]
-    for pid in fpool.head(flexn).player_id:
-        used.add(pid)
+    used: set = set()
+    for _label, eligible in slot_plan(cfg):
+        pool = ros_my[(ros_my.position.isin(eligible))
+                      & (~ros_my.player_id.isin(used))]
+        if not pool.empty:
+            used.add(pool.iloc[0].player_id)
     bench = ros_my[~ros_my.player_id.isin(used)]
     return ros_my, used, bench
 
@@ -100,17 +101,24 @@ def _breakout_flags(season: int, week: int, fa_ids: list[str]) -> dict[str, list
 
 def rank_free_agents(free_agents: list[str], my_roster: list[str],
                      season: int, week: int,
-                     faab_remaining: float | None = None) -> pd.DataFrame:
+                     faab_remaining: float | None = None,
+                     cfg: dict | None = None) -> pd.DataFrame:
     """Rank available players. Columns: player_id, name, pos, ros_value,
     next_week_value, score, breakout_flags, suggested_drop, faab_bid, confidence,
-    rationale."""
-    cfg = league_config()
+    rationale.
+
+    ``cfg`` is the league being ranked FOR. Defaulting to the active league is
+    wrong for every other league: the free-agent pool is already built with the
+    right league's config, so pool and ranking would be scored under different
+    rulesets, and the ROS horizon (`playoff_week_start`) would run to week 18.
+    """
+    cfg = cfg or league_config()
     budget = float(faab_remaining if faab_remaining is not None
                    else cfg["waivers"]["faab_budget"])
 
-    season_proj = proj.project_season(season)
-    ros = proj.project_ros(season, week, season_proj=season_proj)
-    wk = proj.project_week(season, week, season_proj=season_proj)
+    season_proj = proj.project_season(season, cfg=cfg)
+    ros = proj.project_ros(season, week, season_proj=season_proj, cfg=cfg)
+    wk = proj.project_week(season, week, season_proj=season_proj, cfg=cfg)
     ros_pts = ros.set_index("player_id")["proj_points"].to_dict()
     wk_pts = wk.set_index("player_id")["proj_points"].to_dict()
     names = season_proj.set_index("player_id")[["name", "position", "team"]]

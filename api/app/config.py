@@ -124,6 +124,22 @@ def resolve_league(league_id: str | None = None) -> str:
     return league_id
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge ``override`` into a copy of ``base``.
+
+    Nested dicts merge key by key; every other value (including lists such as
+    `points_allowed_tiers` and `flex_eligible`) is replaced wholesale, since a
+    partial list override has no sensible meaning.
+    """
+    out = copy.deepcopy(base)
+    for key, val in override.items():
+        if isinstance(val, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge(out[key], val)
+        else:
+            out[key] = copy.deepcopy(val)
+    return out
+
+
 @lru_cache(maxsize=32)
 def league_config(league_id: str | None = None) -> dict:
     """Full config for one league: shared blocks with that league's overrides merged in.
@@ -144,7 +160,8 @@ def league_config(league_id: str | None = None) -> dict:
     league["name"] = entry.get("name", league.get("name"))
     if entry.get("teams") is not None:
         league["teams"] = entry["teams"]
-    for key in ("playoff_week_start", "sleeper_league_id", "sleeper_draft_id", "platform"):
+    for key in ("playoff_week_start", "sleeper_league_id", "sleeper_user_id",
+                "sleeper_draft_id", "platform"):
         if entry.get(key) is not None:
             league[key] = entry[key]
 
@@ -160,9 +177,14 @@ def league_config(league_id: str | None = None) -> dict:
             espn[key] = entry[key]
 
     # Future-proofing: a league may still override shared blocks if it ever needs to.
+    # DEEP merge, not `dict.update`: a shallow update replaces a whole sub-block,
+    # so a league overriding only `roster.starters` would silently lose `bench`,
+    # `ir` and `flex_eligible`, and one overriding only `scoring.receiving` would
+    # lose passing/rushing/kicking/dst -- with no error until something downstream
+    # KeyErrors or, worse, quietly scores nothing.
     for block in ("scoring", "roster", "waivers"):
         if entry.get(block):
-            cfg.setdefault(block, {}).update(entry[block])
+            cfg[block] = _deep_merge(cfg.get(block) or {}, entry[block])
 
     validate_league_config(cfg, lid)
     return cfg

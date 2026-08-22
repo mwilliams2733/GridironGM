@@ -254,8 +254,9 @@ def test_get_rankings_wires_faab_remaining_into_rank_free_agents(monkeypatch):
 
     captured = {}
 
-    def fake_rank(fa_ids, my_roster, season, week, faab_remaining=None):
+    def fake_rank(fa_ids, my_roster, season, week, faab_remaining=None, cfg=None):
         captured["faab_remaining"] = faab_remaining
+        captured["cfg"] = cfg
         return pd.DataFrame([{
             "player_id": fa_ids[0], "name": "X", "pos": "WR", "team": "BUF",
             "ros_value": 1.0, "next_week_value": 1.0, "score": 1.0,
@@ -271,6 +272,9 @@ def test_get_rankings_wires_faab_remaining_into_rank_free_agents(monkeypatch):
     r = client.get("/api/waivers/rankings")
     assert r.status_code == 200
     assert captured["faab_remaining"] == 123.0
+    # ...and the league's config, without which the ranking is scored under the
+    # active league's rules while the free-agent pool was built under this one's.
+    assert captured["cfg"] is not None
 
 
 # --- Cache invalidation (defect 4): a cached value must actually change ----
@@ -284,6 +288,7 @@ def test_run_sync_clears_projection_caches():
     unconditional cache-clearing tail that runs after the loop."""
     from app.etl import sync
     from app.models import projections as proj
+    from app.models import vorp
     from app.routers import draft as draft_router
 
     # populate every cache the invalidation block is responsible for
@@ -291,12 +296,16 @@ def test_run_sync_clears_projection_caches():
     proj._weekly_rows((2025,))
     proj._snaps(2025)
     proj._completed_seasons(2025)
-    draft_router._season_proj_cache[2025] = "sentinel"
+    vorp._players_indexed()
+    draft_router._season_proj_cache[(2025, "sentinelkey")] = "sentinel"
 
     assert proj._players.cache_info().currsize > 0
     assert proj._weekly_rows.cache_info().currsize > 0
     assert proj._snaps.cache_info().currsize > 0
     assert proj._completed_seasons.cache_info().currsize > 0
+    # `_players_indexed` backs ADP name resolution: stale here means `resolve_adp`
+    # matches newly-synced players against the pre-sync players table.
+    assert vorp._players_indexed.cache_info().currsize > 0
     assert draft_router._season_proj_cache
 
     sync.run_sync("__no_such_scope_used_only_to_reach_the_cache_clear_tail__")
@@ -305,4 +314,48 @@ def test_run_sync_clears_projection_caches():
     assert proj._weekly_rows.cache_info().currsize == 0
     assert proj._snaps.cache_info().currsize == 0
     assert proj._completed_seasons.cache_info().currsize == 0
+    assert vorp._players_indexed.cache_info().currsize == 0
     assert draft_router._season_proj_cache == {}
+
+
+# --- I4: the season-projection cache must be keyed by scoring profile -------
+
+
+def test_season_proj_cache_is_keyed_by_scoring_profile():
+    """The old comment ("scoring is shared, so key by season only") stopped being
+    true when Sundt got its own scoring block; the cache then served one
+    league's projections to another."""
+    from app.config import league_config
+    from app.routers import draft as draft_router
+    from app.scoring import profile_key
+
+    espn, sundt = league_config("league1"), league_config("sundt")
+    assert profile_key(espn) != profile_key(sundt), "premise: scoring differs"
+
+    draft_router._season_proj_cache.clear()
+    draft_router._season_proj_cache[(2025, profile_key(espn))] = "espn-frame"
+    assert draft_router._season_proj(2025, espn) == "espn-frame"
+    # The Sundt call must MISS this entry rather than reuse the ESPN frame.
+    assert draft_router._season_proj_cache.get((2025, profile_key(sundt))) is None
+    draft_router._season_proj_cache.clear()
+
+
+# --- I7: a failed roster read must not look like an empty roster -----------
+
+
+def test_waiver_rankings_surface_a_roster_read_failure(monkeypatch):
+    """An empty roster makes worst_drop_val 0.0, so every free agent's upgrade
+    becomes his full ROS value and FAAB is sized against nothing — plausible
+    output from a total failure. It must warn instead."""
+    import app.routers.waivers as waivers_router
+
+    def _boom(*a, **kw):
+        raise RuntimeError("sleeper cache unreadable")
+
+    monkeypatch.setattr(waivers_router.platform, "get_my_roster", _boom)
+
+    r = client.get("/api/waivers/rankings")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["rankings"] == []
+    assert "sleeper cache unreadable" in body.get("warning", "")
