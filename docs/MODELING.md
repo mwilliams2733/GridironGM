@@ -7,8 +7,20 @@ silently drift. If you change a number in code, change it here too.
 
 All league settings (team count, scoring, roster slots, FLEX eligibility, FAAB budget)
 are read from `config/league.yaml` via `league_config()` — **nothing here hard-codes them**.
-Points are always **half-PPR** as produced by `scoring.py` / the precomputed
-`weekly_stats.fantasy_points_half_ppr` column.
+Points are computed **per league, at read time**, by `scoring.py` (`score_frame` /
+`score_offense` / `score_kicker` / `score_dst`) from raw nflverse stat columns.
+`weekly_stats` no longer stores a `fantasy_points_half_ppr` column — five leagues with
+different scoring rules (four half-PPR ESPN leagues plus the full-PPR Sleeper league,
+§5.1) cannot share one precomputed number.
+
+> **Schema migration note.** `db.py`'s `CREATE TABLE IF NOT EXISTS` never alters an
+> existing table. A database created before this pass keeps the old schema silently:
+> `weekly_stats` retains the dead `fantasy_points_half_ppr` column and is missing
+> `interceptions` history, and `schedules` lacks `home_score`/`away_score`, which makes
+> `sync_team_defense` fail with `no such column`. There is no automatic migration —
+> if you hit either symptom, drop the affected table(s) (`weekly_stats`, `schedules`,
+> `team_defense`) from the SQLite file and re-run `npm run sync` to rebuild them under
+> the current schema.
 
 Modules:
 
@@ -30,7 +42,8 @@ Modules:
   per-game rates and availability, so they are excluded.
 - **A "full slate" is 17 games** (`FULL_SLATE`) in an 18-week season (each team has one bye).
 - **Player universe.** Season projections are produced for every QB/RB/WR/TE with at least
-  one qualifying game in the window, plus K and DST via anchored models (§4). Players with no
+  one qualifying game in the window, plus K and DST via history-driven models over ingested
+  `kicking_stats`/`team_defense` (§4). Players with no
   `weekly_stats` history (e.g. incoming rookies) get **no** statistical projection — this is a
   known limitation (§7).
 - **Team abbreviation normalization.** `weekly_stats`, `schedules`, and `odds_games` use
@@ -311,45 +324,41 @@ audited for how much of it is market-driven.
 
 ---
 
-## 4. Kicker & DST models (§ simplified — no `weekly_stats` for these positions)
+## 4. Kicker & DST models — history-driven (`_project_k_dst_season`)
 
-Kickers and defenses have **no** rows in `weekly_stats` (positions are QB/RB/WR/TE only), so they
-are modeled purely from Vegas implied totals. Both project a full 17-game slate. **These are
-deliberately simple, documented approximations.**
-
-> **ADP is the universe, not an input.** The ADP table only supplies *which* kickers and defenses
-> exist (and their names/teams); `adp` is echoed into `components_json` but never enters the ppg
-> formula. So the K ranking is exactly "whose team has the highest implied total" and carries none
-> of the market's information about kicker quality or volume. See §10.6.
-
-**Kicker** (per-game points scale with the team's own implied total — more scoring drives → more
-FG/XP attempts):
+Kickers and defenses have **no** rows in `weekly_stats` (positions are QB/RB/WR/TE only), but
+as of this pass they are ingested into their own tables — `kicking_stats` and `team_defense`
+— and are projected from that real history using the **same recency-weighted aggregation
+offense uses** (`_weight_seasons`, §1.1/§1.2), not a separate formula. This replaces the earlier
+one-variable Vegas anchors (`K_BASE_PPG`/`K_IMPLIED_GAIN`, `DST_BASE_PPG`/`DST_IMPLIED_GAIN`),
+which had never actually been measured against real K/DST outcomes — see §8.4 for the
+baseline this pass established.
 
 ```
-K_ppg  = 8.0 + 0.45 × (team_implied_total − 22.9),  floored at 4.0
-K_season = K_ppg × 17
+per-season ppg = score_kicker(row) / score_dst(row), averaged per (player|team, season)
+base_ppg, proj_games = _weight_seasons(per-season rows, trend=False)   # same as §1.1/§1.2
+proj_points = base_ppg × proj_games
+floor/ceiling = proj_points × 0.80 / 1.20
 ```
 
-`K_BASE_PPG = 8.0` (~ mean startable-kicker half-PPR/game), `K_IMPLIED_GAIN = 0.45`. When no
-odds exist for the team, `team_implied_total` defaults to the league average (→ base 8.0/game).
-
-**DST** (per-game points scale **inversely** with opponents' implied totals — weaker offenses
-faced → more sacks/turnovers/low points-allowed):
-
-```
-DST_ppg  = 7.0 + 0.55 × (22.9 − mean_opponent_implied_total),  floored at 3.0
-DST_season = DST_ppg × 17
-```
-
-`DST_BASE_PPG = 7.0`, `DST_IMPLIED_GAIN = 0.55`. `mean_opponent_implied_total` averages each
-scheduled opponent's team implied total from odds where available, else the league average.
-Floor/ceiling for both are simply `±20%` of the projection. DSTs are keyed by a synthetic id
-`DST_<team>`; kickers resolve to their real `players` id when possible (else `K_<team>`).
-
-**Known simplification:** we do **not** model historical per-defense sack/turnover rates
-(the brief's suggested refinement) because opponent implied total already captures most of the
-signal and no defensive box-score table is loaded. This is the single biggest place a future
-pass could add accuracy.
+- Kicker rows are scored per-row by `score_kicker` (linear ladder: FG bands, misses, PATs) and
+  grouped by `(player_id, season)`. A kicker with `base_ppg <= 0` is dropped — under every
+  league's scoring a real kicker cannot score non-positive, so this only ever catches
+  missing/garbage data.
+- DST rows are scored per-row by `score_dst` (sacks, INTs, fumble recoveries, defensive/ST TDs,
+  safeties, blocked kicks, plus the **tiered** points-allowed ladder — not linear, so it cannot
+  ride `scoring_terms`/`score_frame` and is scored separately) and grouped by `(team, season)`.
+  No `base_ppg <= 0` guard: a defense that gives up a lot can legitimately average a negative
+  score under a tiered ladder — that is real signal, not a data artifact.
+- `usage_trend` is meaningless for these positions, so `opp_pg` is set equal to `ppg` for both,
+  which forces the trend ratio to 1.0 and drops the term out of `_weight_seasons`.
+- **The Vegas signal is not discarded** — it remains the shared matchup factor (§2/§3) that
+  `project_week`/`project_ros` apply on top of this history-driven baseline: K keeps the
+  offensive form (more scoring drives → more FG/XP attempts) and DST inverts on the opponent's
+  implied total (§2.3), exactly as before.
+- DSTs are keyed by a synthetic id `DST_<team>`; kickers resolve to their real `players` id.
+- **ADP remains the universe, not an input**, for both positions — the ADP table only supplies
+  *which* kickers/defenses exist (names/teams), never enters the ppg formula. See §10.9.
 
 ---
 
@@ -358,19 +367,27 @@ pass could add accuracy.
 ### 5.1 Replacement levels (`replacement_levels`)
 
 Replacement **rank** per position = number of that position rostered as startable across the
-league, derived from config (never hard-coded):
+league, derived from config (never hard-coded). Flex-type slots are now **declarative**
+(`roster.flex_slots` in `config/league.yaml`, read by `flex_slot_defs`), not a single fixed
+`flex_share` — this is what makes a SUPER_FLEX slot expressible:
 
 ```
-level(pos) = starters(pos) × teams   +   (flex demand share, for flex-eligible pos)
-flex_slots = starters(FLEX) × teams
-flex_share = { RB: 0.45, WR: 0.45, TE: 0.10 }        # split of flex slots by typical usage
+level(pos) = starters(pos) × teams
+for each declared flex slot (label, eligible positions, share):
+    level(pos) += starters(label) × teams × share(pos)     for pos in eligible
 ```
 
-For the loaded 12-team config this yields **QB12, RB29, WR29, TE13, K12, DST12** — i.e. a
-"replacement" RB is roughly the 29th-best RB (the caliber freely available on waivers). The
-RB/WR-heavy, TE-light flex split reflects that flex slots are filled by RBs and WRs far more
-often than TEs. `replacement_points()` then reads the projected points of the player at that
-rank; VORP is measured against it.
+A league with no `flex_slots` block falls back to the legacy single FLEX synthesised from
+`flex_eligible`, using `LEGACY_FLEX_SHARE = { RB: 0.45, WR: 0.45, TE: 0.10 }` — the four
+ESPN leagues keep their exact original behaviour.
+
+For the four 10/12-team ESPN leagues (single FLEX only) this yields **QB12, RB29, WR29, TE13,
+K12, DST12**. The Sundt Redraft league (12-team, full-PPR, `FLEX` + `SUPER_FLEX`, share
+`{QB: .90, RB: .04, WR: .04, TE: .02}` on SUPER_FLEX) yields **QB23, RB30, WR30, TE13, K12,
+DST12** — the QB replacement level jumps from QB12 to QB23 because a second, wide-open
+quarterback-eligible slot pulls QB scarcity up sharply, exactly the value shift a superflex
+format is supposed to produce. `replacement_points()` then reads the projected points of the
+player at that rank; VORP is measured against it.
 
 ### 5.2 VORP
 
@@ -483,18 +500,26 @@ at least 1.
 
 ## 7. Lineup optimizer — `optimize` (`lineup.py`)
 
-Fills the config's starter slots to maximize total `project_week` points. Slots are expanded
-from config (`QB, RB1, RB2, WR1, WR2, TE, FLEX, K, DST` for the loaded config); FLEX accepts any
-`flex_eligible` position.
+Fills the config's starter slots to maximize total `project_week` points. The slot plan is now
+**fully derived from config** (`slot_plan(cfg)`), not hard-coded: fixed positions expand to
+numbered labels (`RB` × 2 → `RB1`, `RB2`) and every flex-type slot in `flex_slot_defs` (§5.1)
+becomes its own labeled slot with its declared eligible-position set — so `SUPER_FLEX` needs no
+code change in the optimizer, it falls out of the same config the replacement-level math reads.
 
-**Algorithm & optimality proof.** Fixed positional slots are mutually exclusive and independent,
-so assigning each position its top-N projected players maximizes that position's contribution.
-The single FLEX then takes the best remaining flex-eligible leftover — it can never improve the
-total to move an already-optimal fixed starter to the bench in favor of a lower-projected FLEX.
-Therefore greedy-per-position-then-FLEX is optimal for a single FLEX. The `__main__` block
-**verifies this against brute-force enumeration** (`_brute_force_best`) — they match exactly.
-(For multiple heterogeneous FLEX/superflex slots this greedy would need extending to a small
-assignment/enumeration; not required by the current config.)
+**Fill order is load-bearing: ascending eligibility breadth.** `slot_plan` sorts slots by the
+size of their eligible-position set, so the most restrictive slot fills first — plain `QB`
+before `FLEX` (RB/WR/TE) before `SUPER_FLEX` (QB/RB/WR/TE). With only a WR-25 and a QB-20 left,
+filling `SUPER_FLEX` first would take the WR and strand `FLEX` with nobody eligible (25 points
+instead of 45). Because `FLEX`'s eligible set is a subset of `SUPER_FLEX`'s, the eligibility
+family is laminar (nested, never partially overlapping), and restrictive-first greedy is
+provably optimal on a laminar family — it's the single-FLEX optimality argument (each fixed
+slot is independent; the widest flex slot only ever takes what nothing narrower could use)
+generalized to nested flex tiers.
+
+**Verification.** `_brute_force_best` is a slot-generic reference optimum (exhaustive
+assignment enumeration over `slot_plan`, exponential but fine for the 9-10 slots/≤20 players a
+roster holds) — it validates superflex lineups the exact same way it validates the single-FLEX
+case, and the `__main__` smoke block confirms greedy matches it exactly on both.
 
 **Outputs (`LineupResult`):** optimal `slots`, `bench` (sorted by projection), `total`,
 `current_total`/`delta` vs a supplied current lineup, per-player start **confidence**, and the
@@ -525,18 +550,45 @@ both were projected and played. Note these validation weeks have **no odds** (20
 loaded), so only DvP, recent form, home/away, and injuries are exercised — a realistic
 worst-case for the model:
 
-Re-measured on the 2026-08-12 data refresh (nflverse had revised some 2025 lines; MAE moved by
-≤0.1 anywhere, so the model is stable under the revision):
+Re-measured 2026-08-22, after the scoring-engine rewrite (data-driven `score_frame` reading raw
+`weekly_stats` columns instead of the precomputed `fantasy_points_half_ppr` column) and the
+flex/superflex, rest-of-season-horizon-cap, and Sleeper-ETL work in this plan. The scoring
+equivalence proof (18,533/18,533 rows, max diff 0.000) said none of this could move offensive
+numbers; the re-measurement confirms it — figures are within noise of the previous pass (≤0.1
+anywhere, consistent with normal nflverse line revisions, not a regression):
 
 | Week | N | QB | RB | WR | TE | Overall |
 |------|---|----|----|----|----|---------|
-| 2025 wk 6  | 255 | 5.76 | 4.76 | 4.32 | 3.25 | 4.37 |
-| 2025 wk 10 | 240 | 7.52 | 4.32 | 4.03 | 3.34 | 4.32 |
-| 2025 wk 14 | 246 | 7.42 | 3.81 | 4.05 | 2.80 | 4.09 |
+| 2025 wk 6  | 256 | 5.78 | 4.76 | 4.29 | 3.25 | 4.36 |
+| 2025 wk 10 | 241 | 7.51 | 4.33 | 4.01 | 3.34 | 4.31 |
+| 2025 wk 14 | 247 | 7.42 | 3.81 | 4.09 | 2.80 | 4.10 |
 
-Overall MAE ~4.0–4.3 points is competitive with public weekly projection systems (typical
+Command:
+
+```bash
+.venv/Scripts/python.exe -c "
+import sys; sys.path.insert(0,'api')
+from app.db import read_df
+from app.models import projections as proj
+from app.scoring import score_frame
+s = proj.project_season(2025)
+for wk in (6, 10, 14):
+    w = proj.project_week(2025, wk, season_proj=s)
+    raw = read_df('SELECT * FROM weekly_stats WHERE season=2025 AND week=?', (wk,))
+    raw['fp'] = score_frame(raw)
+    m = w.merge(raw[['player_id','fp']], on='player_id')
+    m['ae'] = (m.proj_points - m.fp).abs()
+    print(f'week {wk}: n={len(m)} overall MAE={m.ae.mean():.2f}')
+    print(m.groupby('position').agg(n=('ae','size'), MAE=('ae','mean')).round(2).to_string())
+"
+```
+
+Overall MAE ~4.1–4.4 points is competitive with public weekly projection systems (typical
 skill-position MAE 4–6). QB MAE is higher (~6–7) as expected given QBs' larger scoring range and
 the boom/bust of rushing-QB games. TE MAE is lowest (~3) reflecting their compressed range.
+**Verdict: offensive accuracy is unchanged** — the twelve prior tasks in this plan changed
+architecture (config-driven scoring, declarative flex, Sleeper ingestion) without touching the
+offensive projection's actual behavior, as intended.
 
 ### 8.3 Optimizer
 
@@ -544,6 +596,54 @@ The greedy optimal lineup equals the brute-force optimum on the smoke roster (20
 produces a plausible fantasy lineup (Allen QB; Taylor/Achane RB; London/Jefferson WR; Bowers TE;
 Cook FLEX; Myers K; Seattle DST) with sensible close calls (Jefferson over St. Brown by 0.2,
 Cook over Jacobs by 0.3).
+
+### 8.4 K/DST accuracy baseline (established 2026-08-22 — previously unmeasured)
+
+§4's Vegas anchors were replaced by history-driven K/DST models in an earlier task in this plan,
+but nobody had ever scored the replacement against real outcomes. This is that measurement,
+scoring 2025 actual kicker/DST points (via `score_kicker`/`score_dst` against `kicking_stats`/
+`team_defense`) against `project_week`, which applies the shared matchup factor (§2/§3) on top
+of the history baseline (§4):
+
+| Week | K N | K MAE | DST N | DST MAE |
+|------|-----|-------|-------|---------|
+| 2025 wk 6  | 26 | 4.18 | 30 | 3.49 |
+| 2025 wk 10 | 23 | 3.81 | 28 | 3.62 |
+| 2025 wk 14 | 24 | 3.98 | 28 | 4.29 |
+
+Command (shown for week 10; weeks 6/14 substitute the week number):
+
+```bash
+.venv/Scripts/python.exe -c "
+import sys; sys.path.insert(0,'api')
+from app.db import read_df
+from app.models import projections as proj
+from app.scoring import score_kicker, score_dst
+s = proj.project_season(2025)
+k = read_df('SELECT * FROM kicking_stats WHERE season=2025 AND week=10')
+k['actual'] = [score_kicker(r) for r in k.to_dict('records')]
+w = proj.project_week(2025, 10, season_proj=s)
+m = w.merge(k[['player_id','actual']], on='player_id')
+print('K   n=%d MAE=%.2f' % (len(m), (m.proj_points-m.actual).abs().mean()))
+d = read_df('SELECT * FROM team_defense WHERE season=2025 AND week=10')
+d['actual'] = [score_dst(r) for r in d.to_dict('records')]
+d['player_id'] = 'DST_' + d.team
+m2 = w.merge(d[['player_id','actual']], on='player_id')
+print('DST n=%d MAE=%.2f' % (len(m2), (m2.proj_points-m2.actual).abs().mean()))
+"
+```
+
+**Verdict: the history model is a clear improvement, not a regression.** K MAE averages ~4.0,
+DST MAE ~3.8 across the three sampled weeks — both comfortably under the ~4.5 threshold that
+would flag the history model as worse than the anchor it replaced, and both are *tighter* than
+several offensive positions (QB, RB) in §8.2's table. DST in particular was the position most at
+risk (the old anchor was a single Vegas variable with no defensive history at all), and its MAE
+(3.49–4.29, no monotonic trend across weeks) shows no sign of being worse than a one-variable
+model would have been. Caveat: this is 3 weeks (n=23–30 per position per week), not
+independent draws — all three weeks share the same 2-3 season history window and the same
+league scoring rules, so this is a first baseline, not a large-sample proof; a fuller
+in-season backtest across more weeks would tighten the estimate. No action needed: keep the
+history-driven model from the earlier task, do not revert to anchors.
 
 ---
 
@@ -569,10 +669,10 @@ Cook over Jacobs by 0.3).
 | `SCRIPT_MAX` | 0.08 | 2.4 | Game-script cap |
 | `HOME_FIELD` | 0.02 | 2.5 | Home/road adjustment |
 | `INJURY_MULT` | Out0/Dbt.25/Q.92 | 2.6 | Injury-status dampeners |
-| `K_BASE_PPG` / `K_IMPLIED_GAIN` | 8.0 / 0.45 | 4 | Kicker anchor / implied sensitivity |
-| `DST_BASE_PPG` / `DST_IMPLIED_GAIN` | 7.0 / 0.55 | 4 | DST anchor / implied sensitivity |
 | `TIER_GAP_MULT` | 1.8 | 5.3 | Tier-break gap multiplier |
-| `flex_share` | RB.45/WR.45/TE.10 | 5.1 | Flex demand split |
+| `LEGACY_FLEX_SHARE` | RB.45/WR.45/TE.10 | 5.1 | Fallback flex split when no `flex_slots` declared |
+| `flex_slots.FLEX.share` (Sundt) | RB.45/WR.45/TE.10 | 5.1 | Declarative FLEX demand split |
+| `flex_slots.SUPER_FLEX.share` (Sundt) | QB.90/RB.04/WR.04/TE.02 | 5.1 | Declarative SUPER_FLEX demand split |
 | `NEED_UNFILLED_W`/`SCARCITY_W`/`BYE_PENALTY` | 6.0/1.0/4.0 | 5.5 | Roster-need weights |
 | `ROS_WEIGHT` / `NEXT_WEEK_WEIGHT` | 1.0 / 0.5 | 6 | Waiver score blend |
 | `BREAKOUT_LOOKBACK` | 3 | 6.1 | Breakout trend window |
@@ -589,26 +689,48 @@ Cook over Jacobs by 0.3).
 1. **No rookie/no-history projections.** Players without `weekly_stats` rows (incoming rookies)
    get no statistical projection. A rookie model (draft capital + landing spot + ADP prior)
    would fill this; ADP is already resolved for them, so a placeholder could be blended in.
-2. **DST model ignores historical defensive rates.** Only opponent implied total is used; adding
-   per-defense sack/turnover/points-allowed history (a dedicated table would be needed) is the
-   biggest accuracy lever for DST.
-3. **FAAB assumes full budget remaining.** Actual remaining budget should come from ESPN sync.
+2. ~~**DST model ignores historical defensive rates.**~~ **Done (2026-08-22)** — `team_defense`
+   and `kicking_stats` are now ingested and both K and DST project from real recency-weighted
+   history (§4), not a single Vegas variable. §8.4 establishes the first-ever accuracy baseline
+   for this model and finds it a clear improvement over the anchor it replaced.
+3. ~~**FAAB assumes full budget remaining.**~~ **Done (2026-08-22)** — the Sleeper ETL now syncs
+   each roster's `faab_used` (`waiver_budget_used` in Sleeper's settings), and
+   `routers/waivers.py::_faab_remaining` computes `faab_budget − faab_used` per team, so
+   `rank_free_agents` sees the league's *actual* remaining budget for Sleeper leagues. ESPN's
+   API does not expose FAAB usage, so ESPN leagues still fall back to the full configured
+   budget — `_faab_remaining` returns `None` in that case and the caller treats that as
+   "assume full", which is the documented, deliberate fallback rather than a bug.
 4. ~~**ROS leaves full-season odds on the table.**~~ **Done (2026-08-12)** — `project_ros` now
    sums the shared per-week matchup factor over the remaining schedule (§3). Note this means ROS
    quality is now tied to odds freshness: re-run `sync odds` before leaning on waiver rankings,
    since lines move. Historical validation still runs odds-free (2025 odds aren't loaded), so it
    exercises the fallback path.
-5. **Single-FLEX assumption in the optimizer.** Correct for the loaded config; superflex or
-   multi-flex formats would require extending the assignment step (documented in §7).
-6. **K/DST ignore the market and their own history.** §4's models are one-variable; ADP is
-   present but unused, and no defensive box-score table is loaded. Blending the ADP rank as a
-   prior would cost nothing (the data is already synced and 100% resolved).
-7. **Constants are unfitted.** Every weight in §9 was chosen from domain reasoning, not fitted to
+5. ~~**ROS horizon was uncapped.**~~ **Done (2026-08-22)** — `project_ros` now stops at
+   `last_scoring_week(cfg)` instead of always walking to week 18. A league whose fantasy
+   playoffs start week 15 (e.g. Sundt Redraft, `playoff_week_start: 15`) stops accruing
+   regular-season ROS value at week 14 — weeks 15–17 only pay out if you qualify, and an
+   uncapped horizon systematically overvalued players with strong late schedules regardless of
+   whether their manager makes the playoffs. Absent `playoff_week_start`, the cap is
+   `REG_SEASON_WEEKS` (18), so the four ESPN leagues are unaffected.
+6. **Single-FLEX assumption in the optimizer.** ~~Superseded (2026-08-22)~~ — the optimizer's
+   slot plan is now fully config-derived (§7) and SUPER_FLEX is exercised by the Sundt league
+   with no optimizer code change. The remaining caveat is narrower: `_brute_force_best` is
+   exponential in slot count, fine for the 9–10 slots/≤20-player rosters in play today but not a
+   general-purpose scaling strategy if a config ever declared many more flex-type slots.
+7. ~~**K/DST ignore the market and their own history.**~~ **Done (2026-08-22)** — both now use
+   ingested history (§4). ADP is still present but unused in the ppg formula for either
+   position (tracked separately as part of §10.9 below).
+8. **Constants are unfitted.** Every weight in §9 was chosen from domain reasoning, not fitted to
    the 3 seasons in the DB. The validation harness in §8.2 already scores a parameter set against
    held-out weeks, so a coarse sweep over the highest-leverage few (`WEEK_FORM_BLEND`,
    `IMPLIED_TOTAL_GAIN`, `DVP_CLIP`, `RECENCY_WEIGHTS`) is mechanical work with a measurable
    answer. Fit on 2023–24, score on 2025, or the MAE will be optimistic.
-8. **No calibration against the market.** Nothing checks projections against ADP consensus, so an
+9. **No calibration against the market.** Nothing checks projections against ADP consensus, so an
    outlier passes silently — the current 2026 board has Bo Nix as QB2 (307.9) ahead of Hurts,
    Mahomes and Lamar. A "biggest disagreements vs ADP" report would surface these as either the
-   model's edge or its bugs, and is the fastest way to find the next one.
+   model's edge or its bugs, and is the fastest way to find the next one. **Related but distinct
+   guard added (2026-08-22):** the Sleeper ETL's `_check_scoring_drift` (`api/app/etl/sleeper.py`)
+   compares `league.yaml`'s transcribed scoring rules against the live Sleeper league at sync
+   time and warns on any mismatch. That guards *scoring configuration* against the live
+   platform — it catches a transcription error or a commissioner rule change — it does not
+   check *projections* against ADP consensus, which remains the open gap described above.

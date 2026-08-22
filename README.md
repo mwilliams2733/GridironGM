@@ -1,9 +1,11 @@
 # GridironGM
 
-Fantasy football decision support across **multiple** half-PPR ESPN leagues:
+Fantasy football decision support across **multiple** leagues on **ESPN and Sleeper**:
 **Draft Assistant** · **Waiver Wire Manager** · **Weekly Start/Sit Optimizer** — all
 driven by one projections engine over 3 seasons of nflverse data, Vegas lines from
-The Odds API, and live ESPN league state.
+The Odds API, and live league state from whichever platform each league is on. Scoring
+and roster rules (half-PPR, full-PPR, single-FLEX, superflex, ...) are config-driven per
+league, not hard-coded.
 
 ## Setup
 
@@ -31,10 +33,37 @@ npm run sync         # first data sync (nflverse stats, odds, ADP, ESPN if confi
   add per-league `espn_s2:`/`swid:` to that entry.
   With no ESPN credentials the app runs in **manual mode**: paste your roster in the UI.
 
+### Sleeper leagues
+
+Sleeper leagues need **no credentials** — Sleeper's league API is public, unlike ESPN's cookie
+auth. Add a Sleeper league to the `leagues:` block with `platform: sleeper` and its league id
+(the numeric id from the league's URL, e.g. `https://sleeper.com/leagues/1395500725785591808/...`):
+
+```yaml
+leagues:
+  - id: sundt
+    name: "Sundt Redraft"
+    platform: sleeper
+    teams: 12
+    sleeper_league_id: "1395500725785591808"
+    sleeper_draft_id: "1395500726964195328"    # optional, for draft-room sync
+    draft: { my_slot: 10, rounds: 17 }
+```
+
+`npm run sync` (the `espn` scope) syncs **both** platforms in the same pass — every configured
+league is synced by whichever platform it declares, ESPN or Sleeper, and one league failing
+never blocks another. Sleeper rosters also report FAAB usage (`faab_used`), so waiver rankings
+use the league's actual remaining budget instead of assuming a full one (ESPN doesn't expose
+this, so ESPN leagues still assume full budget). At sync time the ETL also warns if
+`league.yaml`'s transcribed scoring rules have drifted from what Sleeper's API reports live —
+useful for catching a transcription typo or a commissioner rule change.
+
 ## Multiple leagues
 
-All four leagues share scoring and roster rules; a `leagues:` entry overrides only
-what differs — team count, your draft slot, and the ESPN league id:
+The four ESPN leagues share scoring and roster rules; a `leagues:` entry overrides only
+what differs — team count, your draft slot, and the ESPN league id. A Sleeper league (see
+above) can declare its own `scoring`/`roster` block entirely, including flex-type slots like
+`SUPER_FLEX`, since nothing in the model hard-codes a single scoring or roster shape:
 
 ```yaml
 leagues:
