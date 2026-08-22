@@ -823,8 +823,13 @@ if __name__ == "__main__":
     print("\n=== validate project_week(2025, 10) vs actuals ===")
     s25 = project_season(2025)
     w25 = project_week(2025, 10, season_proj=s25)
-    actual = read_df(
-        "SELECT player_id, fantasy_points_half_ppr fp FROM weekly_stats WHERE season=2025 AND week=10")
+    actual_raw = read_df(
+        "SELECT player_id, receptions, receiving_yards, receiving_tds, "
+        "passing_yards, passing_tds, interceptions, rushing_yards, rushing_tds "
+        "FROM weekly_stats WHERE season=2025 AND week=10")
+    from ..scoring import score_frame
+    actual = actual_raw[["player_id"]].copy()
+    actual["fp"] = score_frame(actual_raw)
     m = w25.merge(actual, on="player_id")
     m["ae"] = (m.proj_points - m.fp).abs()
     print("players compared:", len(m))

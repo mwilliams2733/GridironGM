@@ -83,18 +83,18 @@ def _frame(**overrides) -> pd.DataFrame:
 
 def test_passing_interceptions_is_mapped_onto_interceptions():
     """nflverse renamed this column; we store it as `interceptions`."""
-    out = normalize_weekly(_frame(), rec_val=0.5)
+    out = normalize_weekly(_frame())
     assert "interceptions" in out.columns
     assert out.iloc[0]["interceptions"] == 2
 
 
 def test_opponent_team_is_mapped_onto_opponent():
-    out = normalize_weekly(_frame(), rec_val=0.5)
+    out = normalize_weekly(_frame())
     assert out.iloc[0]["opponent"] == "MIA"
 
 
 def test_sacks_suffered_is_mapped_onto_sacks():
-    out = normalize_weekly(_frame(), rec_val=0.5)
+    out = normalize_weekly(_frame())
     assert out.iloc[0]["sacks"] == 1
 
 
@@ -105,29 +105,36 @@ def test_every_scoring_input_survives_normalization():
     one, scoring silently under- or over-counts instead of failing, so assert
     presence and non-nullness rather than trusting the permissive keep-filter.
     """
-    out = normalize_weekly(_frame(), rec_val=0.5)
+    out = normalize_weekly(_frame())
     missing = [c for c in SCORING_INPUT_COLUMNS if c not in out.columns]
     assert not missing, f"scoring inputs dropped during normalization: {missing}"
     nulls = [c for c in SCORING_INPUT_COLUMNS if out[c].isna().any()]
     assert not nulls, f"scoring inputs arrived null: {nulls}"
 
 
-def test_scoring_a_normalized_row_reproduces_the_stored_points_column():
+def test_a_normalized_row_scores_the_same_as_nflverse_standard_plus_ppr():
     """The invariant per-league scoring depends on.
 
-    Stored points are `nflverse fantasy_points + receptions * rec_val`. Scoring
-    the same row from its components must agree, or points cannot be recomputed
-    under a different league's rules.
+    There is no stored points column any more, so score the normalized row
+    directly and compare against independently-computed nflverse standard
+    scoring plus the configured per-reception value.
     """
-    rec_val = 0.5
-    out = normalize_weekly(_frame(receptions=4, receiving_yards=52), rec_val=rec_val)
-    row = out.iloc[0]
-    assert score_offense(row.to_dict()) == round(float(row["fantasy_points_half_ppr"]), 2)
+    from app.config import league_config
+    row_in = {**NFLVERSE_ROW, "receptions": 4, "receiving_yards": 52}
+    out = normalize_weekly(_frame(receptions=4, receiving_yards=52))
+    rec_val = league_config()["scoring"]["receiving"]["reception"]
+    expected = round(_nflverse_points(row_in) + 4 * rec_val, 2)
+    assert score_offense(out.iloc[0].to_dict()) == expected
+
+
+def test_normalized_frame_has_no_baked_points_column():
+    out = normalize_weekly(_frame())
+    assert "fantasy_points_half_ppr" not in out.columns
 
 
 def test_a_missing_optional_column_still_syncs():
     """Permissiveness is intentional for columns we don't score on."""
     df = _frame().drop(columns=["air_yards_share"])
-    out = normalize_weekly(df, rec_val=0.5)
+    out = normalize_weekly(df)
     assert "air_yards_share" not in out.columns
     assert out.iloc[0]["interceptions"] == 2

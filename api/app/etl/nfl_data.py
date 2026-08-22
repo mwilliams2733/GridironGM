@@ -12,7 +12,7 @@ import logging
 
 import pandas as pd
 
-from ..config import PARQUET_DIR, current_season, ensure_dirs, history_seasons, league_config
+from ..config import PARQUET_DIR, current_season, ensure_dirs, history_seasons
 from ..db import connect, init_db, mark_synced, replace_table
 
 log = logging.getLogger(__name__)
@@ -87,25 +87,18 @@ SCORING_INPUT_COLUMNS = (
 )
 
 
-def normalize_weekly(df: pd.DataFrame, rec_val: float) -> pd.DataFrame:
-    """Map a raw nflverse weekly frame onto our schema and derive league points.
+def normalize_weekly(df: pd.DataFrame) -> pd.DataFrame:
+    """Map a raw nflverse weekly frame onto our schema.
 
     Pure — no DB, no network — so the column contract is unit-testable without a
-    sync (the same split ``projections.py`` uses to keep its math testable).
-    The keep-filter stays permissive so an optional column vanishing between
-    nflverse releases doesn't sink a sync; ``SCORING_INPUT_COLUMNS`` is what
-    tests pin, because those are the ones that must never go missing quietly.
+    sync. Stores raw components only: points are scored at read time through
+    each league's own term table, so no scoring profile is baked in here.
     """
     df = df.rename(columns={k: v for k, v in _RENAMES.items()
                             if k in df.columns and v not in df.columns})
     out = df[[c for c in WEEKLY_COLUMNS if c in df.columns]].copy()
     if "sacks_suffered" in out.columns:
         out = out.rename(columns={"sacks_suffered": "sacks"})
-    # league points = nflverse standard points + configured per-reception value
-    # (nflverse standard already matches ESPN base: pass TD 4, INT -2, fumble -2)
-    out["fantasy_points_half_ppr"] = (
-        df["fantasy_points"].fillna(0) + df["receptions"].fillna(0) * rec_val
-    )
     return out
 
 
@@ -113,8 +106,7 @@ def sync_weekly_stats() -> int:
     import nflreadpy as nfl
 
     df = _pull_seasons("weekly", lambda y: nfl.load_player_stats(y, summary_level="week"), _seasons())
-    rec_val = league_config()["scoring"]["receiving"]["reception"]
-    out = normalize_weekly(df, rec_val)
+    out = normalize_weekly(df)
     out = out[out["position"].isin(["QB", "RB", "WR", "TE"])]
     with connect() as conn:
         n = replace_table(out, "weekly_stats", conn)

@@ -29,7 +29,6 @@ CREATE TABLE IF NOT EXISTS weekly_stats (
     rushing_fumbles_lost REAL, receiving_fumbles_lost REAL, sack_fumbles_lost REAL,
     passing_2pt_conversions REAL, rushing_2pt_conversions REAL, receiving_2pt_conversions REAL,
     special_teams_tds REAL,
-    fantasy_points_half_ppr REAL,
     PRIMARY KEY (season, week, player_id)
 );
 CREATE TABLE IF NOT EXISTS snap_counts (
