@@ -13,7 +13,7 @@ import logging
 import pandas as pd
 
 from ..config import PARQUET_DIR, current_season, ensure_dirs, history_seasons
-from ..db import connect, init_db, mark_synced, replace_table
+from ..db import connect, init_db, mark_synced, read_df, replace_table
 
 log = logging.getLogger(__name__)
 
@@ -215,10 +215,59 @@ def sync_schedules() -> int:
         "season": df["season"], "week": df["week"], "game_id": df["game_id"],
         "home_team": df["home_team"], "away_team": df["away_team"],
         "gameday": df["gameday"].astype(str), "weekday": df["weekday"],
+        "home_score": df.get("home_score"), "away_score": df.get("away_score"),
     })
     with connect() as conn:
         n = replace_table(out, "schedules", conn)
     mark_synced("schedules", f"{n} rows")
+    return n
+
+
+# Columns `scoring.score_dst` reads off a stored team-defense row.
+DEFENSE_INPUT_COLUMNS = (
+    "def_sacks", "def_interceptions", "def_fumbles_forced", "fumble_recovery_opp",
+    "def_tds", "def_safeties", "def_punt_blocks", "def_pat_blocks",
+    "def_fg_blocks", "special_teams_tds", "points_allowed",
+)
+
+_DEFENSE_COLUMNS = ("season", "week", "team", "opponent") + DEFENSE_INPUT_COLUMNS
+
+
+def normalize_team_defense(df: pd.DataFrame, scores: pd.DataFrame) -> pd.DataFrame:
+    """Team-defense rows with points allowed joined from the schedule.
+
+    Points allowed is the OPPONENT's score, so each schedule row contributes two
+    team rows. A defense row with no matching scheduled game is dropped rather
+    than left null: a null would score as a shutout, which is the most valuable
+    outcome in every points-allowed ladder.
+    """
+    df = df.rename(columns={"opponent_team": "opponent"})
+    home = scores.rename(columns={"home_team": "team", "away_score": "points_allowed"})
+    away = scores.rename(columns={"away_team": "team", "home_score": "points_allowed"})
+    pa = pd.concat([
+        home[["season", "week", "team", "points_allowed"]],
+        away[["season", "week", "team", "points_allowed"]],
+    ], ignore_index=True)
+
+    out = df.merge(pa, on=["season", "week", "team"], how="inner")
+    for c in DEFENSE_INPUT_COLUMNS:
+        if c not in out.columns:
+            out[c] = 0.0
+        out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0.0)
+    return out[[c for c in _DEFENSE_COLUMNS if c in out.columns]].copy()
+
+
+def sync_team_defense() -> int:
+    import nflreadpy as nfl
+
+    df = _pull_seasons("team_stats", lambda y: nfl.load_team_stats([y]), _seasons())
+    scores = read_df(
+        "SELECT season, week, home_team, away_team, home_score, away_score FROM schedules"
+    )
+    out = normalize_team_defense(df, scores)
+    with connect() as conn:
+        n = replace_table(out, "team_defense", conn)
+    mark_synced("team_defense", f"{n} rows")
     return n
 
 
@@ -249,4 +298,5 @@ def sync_all_stats() -> dict[str, int]:
         "schedules": sync_schedules(),
         "injuries": sync_injuries(),
         "depth_charts": sync_depth_charts(),
+        "team_defense": sync_team_defense(),
     }

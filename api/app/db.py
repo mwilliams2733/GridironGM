@@ -38,7 +38,16 @@ CREATE TABLE IF NOT EXISTS snap_counts (
 );
 CREATE TABLE IF NOT EXISTS schedules (
     season INTEGER, week INTEGER, game_id TEXT PRIMARY KEY,
-    home_team TEXT, away_team TEXT, gameday TEXT, weekday TEXT
+    home_team TEXT, away_team TEXT, gameday TEXT, weekday TEXT,
+    home_score REAL, away_score REAL
+);
+CREATE TABLE IF NOT EXISTS team_defense (
+    season INTEGER, week INTEGER, team TEXT, opponent TEXT,
+    def_sacks REAL, def_interceptions REAL, def_fumbles_forced REAL,
+    fumble_recovery_opp REAL, def_tds REAL, def_safeties REAL,
+    def_punt_blocks REAL, def_pat_blocks REAL, def_fg_blocks REAL,
+    special_teams_tds REAL, points_allowed REAL,
+    PRIMARY KEY (season, week, team)
 );
 CREATE TABLE IF NOT EXISTS injuries (
     season INTEGER, week INTEGER, player_id TEXT,
