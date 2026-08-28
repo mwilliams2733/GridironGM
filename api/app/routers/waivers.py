@@ -65,7 +65,7 @@ def _free_agent_ids(my_roster: list[str], season: int,
     season_proj = proj.project_season(season)
     if season_proj.empty:
         return [], "no projections available"
-    adp = vorp.resolve_adp(season)
+    adp = vorp.resolve_adp(season, league_config(league_id))
     adp_ids = adp.dropna(subset=["player_id"]).sort_values("adp")["player_id"].tolist()
     ids = [pid for pid in adp_ids if pid not in my_roster][:150]
     if not ids:

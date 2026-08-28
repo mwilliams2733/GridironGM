@@ -18,9 +18,11 @@ different scoring rules (four half-PPR ESPN leagues plus the full-PPR Sleeper le
 > `weekly_stats` retains the dead `fantasy_points_half_ppr` column and is missing
 > `interceptions` history, and `schedules` lacks `home_score`/`away_score`, which makes
 > `sync_team_defense` fail with `no such column`. There is no automatic migration —
-> if you hit either symptom, drop the affected table(s) (`weekly_stats`, `schedules`,
-> `team_defense`) from the SQLite file and re-run `npm run sync` to rebuild them under
-> the current schema.
+> and `adp` lacks its `format` column, which makes every ADP read fail with
+> `no such column: format`. There is no automatic migration —
+> if you hit any of these symptoms, drop the affected table(s) (`weekly_stats`,
+> `schedules`, `team_defense`, `kicking_stats`, `adp`) from the SQLite file and
+> re-run `npm run sync` to rebuild them under the current schema.
 
 Modules:
 
@@ -426,6 +428,25 @@ names. The resolver:
 
 Measured on the loaded 164-row ADP: **164/164 (100%)** resolved — 149 exact, 14 DST, 1 by
 position disambiguation, 0 unmatched.
+
+**ADP is keyed by scoring format, not by team count.** Measured against the live FFC API on
+2026-08-27:
+
+* FFC's `teams` parameter is a **no-op** — `teams=10` and `teams=12` return byte-identical
+  player sets *and* identical ADP values, and the response does not echo the parameter back.
+  It is therefore not sent. Do not re-add it: doing so implies a distinction the endpoint
+  does not make.
+* The scoring **format** is what genuinely differs. half-PPR and full-PPR disagree on
+  **120 of 228** common players by ≥3 picks (largest swing 40.9), and full-PPR lists 266
+  players against half-PPR's 228 — 38 players, including a team defense and several kickers,
+  that half-PPR omits entirely.
+
+`etl/adp.py:adp_format(cfg)` maps a league's `receiving.reception` to the endpoint
+(`0 → standard`, `0.5 → half-ppr`, `1.0 → ppr`) and **raises** on any other value rather
+than guessing a nearest format. `sync_adp` fetches once per distinct format across configured
+leagues — two fetches for the five leagues shipped here — and `resolve_adp(season, cfg)`
+filters to the caller's format. On the current board this changes **236 of 879** rows for
+the full-PPR league and gives **35** players an ADP they previously lacked.
 
 ### 5.5 Roster-need score (`need_score`)
 

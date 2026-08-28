@@ -86,10 +86,14 @@ def post_my_team(body: MyTeamBody, league_id: str | None = None) -> dict:
 
 
 @router.get("/players")
-def get_players(search: str = "", position: str = "", limit: int = 50) -> dict:
+def get_players(search: str = "", position: str = "", limit: int = 50,
+                league_id: str | None = None) -> dict:
+    """Player lookup. `league_id` scopes ADP to that league's scoring format —
+    without it a full-PPR league would be shown half-PPR ADP."""
     season = current_season()
+    cfg = league_config(league_id)
     try:
-        season_proj = proj.project_season(season)
+        season_proj = proj.project_season(season, cfg=cfg)
     except Exception as exc:
         log.warning("project_season failed: %s", exc)
         season_proj = None
@@ -101,7 +105,10 @@ def get_players(search: str = "", position: str = "", limit: int = 50) -> dict:
         s = search.lower()
         df = df[df.name.str.lower().str.contains(s, na=False)]
 
-    adp_df = read_df("SELECT player_name, position, adp FROM adp")
+    from ..etl.adp import adp_format
+    adp_df = read_df(
+        "SELECT player_name, position, adp FROM adp WHERE format=?",
+        (adp_format(cfg),))
     if season_proj is not None and not season_proj.empty:
         proj_by_id = season_proj.set_index("player_id")[["proj_points"]]
         df = df.join(proj_by_id, on="player_id")

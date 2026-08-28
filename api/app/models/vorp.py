@@ -123,14 +123,22 @@ def _players_indexed() -> pd.DataFrame:
     return p
 
 
-def resolve_adp(season: int) -> pd.DataFrame:
+def resolve_adp(season: int, cfg: dict | None = None) -> pd.DataFrame:
     """Map every ADP row to a player_id. DSTs -> synthetic ``DST_<team>`` id; PK
     (kicker) and offensive players fuzzy-matched to the players table by
     normalized name, disambiguated by position and (when needed) team.
 
+    Scoped to the league's own scoring format: a full-PPR league reading
+    half-PPR ADP gets a market that disagrees on 120 of 228 players. See
+    ``etl/adp.py`` for the measurement.
+
     Returns the adp frame with added columns: player_id, match (exact|team|pos|none).
     """
-    adp = read_df("SELECT player_name, position, team, adp, adp_formatted FROM adp")
+    from ..etl.adp import adp_format
+
+    adp = read_df(
+        "SELECT player_name, position, team, adp, adp_formatted FROM adp WHERE format=?",
+        (adp_format(cfg),))
     players = _players_indexed()
     # candidate pool: players with recent projection-relevant history (name reuse
     # across eras is common, so prefer players who actually appear in weekly_stats).
@@ -236,7 +244,7 @@ def vorp_board(drafted_ids: set[str] | None = None,
         season_proj = proj.project_season(season, cfg=cfg)
 
     repl = replacement_points(season_proj, cfg)
-    adp = resolve_adp(season)
+    adp = resolve_adp(season, cfg)
     adp_by_id = adp.dropna(subset=["player_id"]).set_index("player_id")["adp"].to_dict()
     byes = _bye_map(season)
 

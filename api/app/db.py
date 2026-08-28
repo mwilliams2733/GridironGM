@@ -68,10 +68,13 @@ CREATE TABLE IF NOT EXISTS odds_games (
     implied_home REAL, implied_away REAL,
     fetched_at TEXT
 );
+-- ADP keyed by SCORING FORMAT (half-ppr / ppr / standard), not by team count:
+-- FFC's `teams` parameter is a measured no-op, while half-PPR and full-PPR
+-- disagree on 120 of 228 common players. See etl/adp.py.
 CREATE TABLE IF NOT EXISTS adp (
-    player_name TEXT, position TEXT, team TEXT,
+    format TEXT, player_name TEXT, position TEXT, team TEXT,
     adp REAL, adp_formatted TEXT, fetched_at TEXT,
-    PRIMARY KEY (player_name, position)
+    PRIMARY KEY (format, player_name, position)
 );
 CREATE TABLE IF NOT EXISTS projections (
     scope TEXT, season INTEGER, week INTEGER, player_id TEXT,
