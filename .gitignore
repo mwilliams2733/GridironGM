@@ -19,6 +19,7 @@ web/dist/
 
 # Local data cache (rebuildable via sync)
 data/*.db
+data/*.db.bak-*
 data/*.duckdb
 data/*.parquet
 data/cache/
