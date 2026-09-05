@@ -137,3 +137,28 @@ def test_empty_roster_returns_full_starter_counts():
     cfg = _sundt_cfg()
     result = _slot_suggestions({}, cfg)
     assert result == cfg["roster"]["starters"]
+
+
+def test_flex_consumes_the_surplus_before_superflex_sees_it():
+    """Fill order is load-bearing, not cosmetic (see test_flex_slots and
+    test_slots_are_ordered_by_ascending_eligibility_breadth above).
+
+    One surplus RB, which is eligible for both FLEX and SUPER_FLEX. FLEX is
+    narrower (RB/WR/TE) and must be processed first, claiming the RB and
+    leaving SUPER_FLEX (QB/RB/WR/TE) with nothing left in the pool -- so
+    SUPER_FLEX stays genuinely open at 1.
+
+    Asserting only the sum (FLEX + SUPER_FLEX == 1) does NOT distinguish this
+    from getting the order backwards: processing SUPER_FLEX first lets it
+    claim the RB instead, reporting FLEX == 1 (still open) and SUPER_FLEX == 0
+    (wrongly filled) -- same sum, wrong slot marked open. Likewise, dropping
+    the pool-consumption step (computing each flex slot's surplus
+    independently, without decrementing what the next slot sees as "filled")
+    lets the one surplus RB satisfy both slots at once: FLEX == 0 and
+    SUPER_FLEX == 0, sum 0. Both values must be asserted individually.
+    """
+    cfg = _sundt_cfg()
+    filled = {"QB": 1, "RB": 3, "WR": 2, "TE": 1, "K": 1, "DST": 1}
+    result = _slot_suggestions(filled, cfg)
+    assert result["FLEX"] == 0
+    assert result["SUPER_FLEX"] == 1
