@@ -5,6 +5,7 @@ import copy
 
 from app.config import league_config
 from app.models.lineup import _brute_force_best, optimize, slot_plan
+from app.routers.draft import _slot_suggestions
 from tests.test_flex_slots import SUNDT_ROSTER
 
 
@@ -85,3 +86,54 @@ def test_the_second_qb_lands_in_super_flex():
 def _frame_from(recs):
     import pandas as pd
     return pd.DataFrame([{**r, "name": r["player_id"]} for r in recs.values()])
+
+
+def test_superflex_filled_by_second_qb():
+    """Regression test: before the fix, SUPER_FLEX read as 1 (unfilled) here
+    because the old loop compared it against filled.get("SUPER_FLEX"), a
+    position no player has, instead of drawing from the flex-eligible pool.
+    """
+    cfg = _sundt_cfg()
+    filled = {"QB": 2, "RB": 3, "WR": 3, "TE": 1, "K": 1, "DST": 1}
+    result = _slot_suggestions(filled, cfg)
+    assert result["SUPER_FLEX"] == 0
+    assert all(v == 0 for v in result.values())
+
+
+def test_superflex_unfilled_with_one_qb():
+    cfg = _sundt_cfg()
+    filled = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "K": 1, "DST": 1}
+    result = _slot_suggestions(filled, cfg)
+    assert result["SUPER_FLEX"] == 1
+    assert result["FLEX"] == 1
+
+
+def test_flex_and_superflex_do_not_double_count_one_surplus():
+    """Exactly one surplus flex-eligible player (a second QB, eligible only
+    for SUPER_FLEX): it can satisfy at most one flex slot, so the two needs
+    must sum to 1, not 0 or 2.
+
+    A naive fix that computes each flex slot's surplus independently (no
+    shared pool) would double-count here in the other direction: FLEX has no
+    RB/WR/TE surplus of its own (need 1), and the old hardcoded branch never
+    lets SUPER_FLEX see the QB surplus either (stuck at its full need, 1),
+    so the untouched surplus QB is invisible to both and the sum comes out
+    as 2, not 1.
+    """
+    cfg = _sundt_cfg()
+    filled = {"QB": 2, "RB": 2, "WR": 2, "TE": 1, "K": 1, "DST": 1}
+    result = _slot_suggestions(filled, cfg)
+    assert result["FLEX"] + result["SUPER_FLEX"] == 1
+
+
+def test_single_flex_league_unchanged():
+    cfg = league_config()
+    filled = {"QB": 1, "RB": 2, "WR": 3, "TE": 1, "K": 1, "DST": 1}
+    result = _slot_suggestions(filled, cfg)
+    assert result == {"QB": 0, "RB": 0, "WR": 0, "TE": 0, "FLEX": 0, "K": 0, "DST": 0}
+
+
+def test_empty_roster_returns_full_starter_counts():
+    cfg = _sundt_cfg()
+    result = _slot_suggestions({}, cfg)
+    assert result == cfg["roster"]["starters"]

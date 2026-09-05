@@ -14,6 +14,7 @@ from ..etl import espn as espn_etl
 from ..models import mocksim
 from ..models import projections as proj
 from ..models import vorp
+from ..models.vorp import flex_slot_defs
 from ..scoring import profile_key
 from ._common import all_players, records, resolve_espn_player
 
@@ -468,6 +469,54 @@ def get_recommendation(league_id: str | None = None, mock: bool = False) -> dict
     }
 
 
+def _slot_suggestions(filled: dict[str, int], cfg: dict) -> dict[str, int]:
+    """Remaining starter slots to fill, given players already rostered by position.
+
+    Every flex-type slot (FLEX, SUPER_FLEX, ...) is resolved through
+    `flex_slot_defs(cfg)` -- the same source `replacement_levels` and
+    `slot_plan` use -- instead of a hardcoded "FLEX" literal. The literal form
+    sent SUPER_FLEX through the fixed-slot branch, comparing it against
+    `filled.get("SUPER_FLEX")`, a position no player has, so it read as
+    permanently unfilled no matter how many QBs were drafted.
+    """
+    starters = cfg["roster"]["starters"]
+    flex_defs = flex_slot_defs(cfg)
+    filled = dict(filled)  # local copy -- the pool-consumption below mutates it
+
+    slot_suggestions: dict[str, int] = {}
+    for pos, need in starters.items():
+        if pos in flex_defs:
+            continue
+        slot_suggestions[pos] = max(0, need - filled.get(pos, 0))
+
+    # Flex-type slots draw from a shared surplus pool (players at eligible
+    # positions beyond what their own fixed starter slots absorb). Process
+    # narrowest-eligibility slots first (FLEX before SUPER_FLEX) so one
+    # surplus player can't satisfy two flex slots at once.
+    for label, d in sorted(flex_defs.items(), key=lambda kv: len(kv[1]["eligible"])):
+        eligible = d["eligible"]
+        need = starters.get(label, 0)
+        surplus = sum(filled.get(p, 0) for p in eligible) - sum(
+            min(filled.get(p, 0), starters.get(p, 0)) for p in eligible
+        )
+        surplus = max(surplus, 0)
+        have = min(surplus, need)
+        slot_suggestions[label] = max(0, need - have)
+        # Consume the flex-eligible players this slot used from the pool by
+        # reducing what future slots treat as "filled" for those positions.
+        remaining = have
+        for p in eligible:
+            if remaining <= 0:
+                break
+            avail = filled.get(p, 0) - starters.get(p, 0)
+            take = min(max(avail, 0), remaining)
+            if take:
+                filled[p] = filled.get(p, 0) - take
+                remaining -= take
+
+    return slot_suggestions
+
+
 @router.get("/my-roster")
 def get_my_roster_endpoint(league_id: str | None = None, mock: bool = False) -> dict:
     lid = resolve_league(league_id)
@@ -475,8 +524,6 @@ def get_my_roster_endpoint(league_id: str | None = None, mock: bool = False) -> 
     cfg = league_config(lid)
     season = current_season()
     season_proj = _season_proj(season, cfg)
-    starters = cfg["roster"]["starters"]
-    flex_elig = cfg["roster"]["flex_eligible"]
 
     mine = [p for p in state["picks"] if p.get("by_me")]
     ids = [p["player_id"] for p in mine]
@@ -494,14 +541,6 @@ def get_my_roster_endpoint(league_id: str | None = None, mock: bool = False) -> 
             "proj_points": proj_pts,
         })
 
-    slot_suggestions = {}
-    for pos, need in starters.items():
-        if pos == "FLEX":
-            flex_have = sum(filled.get(fp, 0) for fp in flex_elig) - sum(
-                min(filled.get(fp, 0), starters.get(fp, 0)) for fp in flex_elig
-            )
-            slot_suggestions["FLEX"] = max(0, need - max(flex_have, 0))
-        else:
-            slot_suggestions[pos] = max(0, need - filled.get(pos, 0))
+    slot_suggestions = _slot_suggestions(filled, cfg)
 
     return {"picks": rows, "slot_suggestions": slot_suggestions, "my_slot": _my_slot(state, cfg)}
