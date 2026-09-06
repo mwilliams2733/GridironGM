@@ -339,6 +339,79 @@ def _birth_year(birthdate) -> int | None:
         return None
 
 
+def _inject_adp_rookies(df: pd.DataFrame, season: int, cfg: dict) -> pd.DataFrame:
+    """A rookie has zero `weekly_stats` rows, so the history-driven loop above
+    skips him entirely -- the "No rookies" gap (see project memory
+    gridiron-gm-modeling-gaps.md item 4; Travis Hunter was the flagged case).
+    Give him a projection derived from ADP alone, since draft-position market
+    consensus is the only signal that exists for a player with no box scores.
+
+    Scope is deliberately narrow: only players who are (a) on a CURRENT NFL
+    roster -- `depth_charts` is season-scoped (unlike `players`, which is
+    nflreadpy's all-time roster history and would otherwise resurrect retired
+    players with no history, e.g. Troy Aikman, as "rookies") and (b) resolve to
+    an ADP row, so a deep-roster player the market has no opinion on doesn't
+    get an invented value.
+
+    Projection = ``np.interp`` of the rookie's ADP against the (adp,
+    proj_points) curve already implied by this league's OWN history-based
+    rows AT THE SAME POSITION -- the market-to-points relationship this
+    projection engine has already established, not a new assumption about
+    rookie talent. Positions do NOT share a curve: proj_points scale is
+    position-specific (a QB1 outscores an RB1 by ~80 points at similar ADP),
+    so pooling positions makes the interpolation pick up whichever position
+    happens to sit at a nearby ADP rather than the rookie's own market tier --
+    verified against real data: a pooled curve put a 67-ADP rookie RB (208.7)
+    above Saquon Barkley and Breece Hall because a 66-ADP QB spike was the
+    nearest neighbor.
+    """
+    from .vorp import resolve_adp  # deferred: vorp imports this module at load time
+
+    if df.empty:
+        return df
+
+    on_roster = set(read_df(
+        f"SELECT DISTINCT player_id FROM depth_charts WHERE pos IN "
+        f"({','.join('?' for _ in OFF_POS)})", OFF_POS)["player_id"])
+    history = set(read_df("SELECT DISTINCT player_id FROM weekly_stats")["player_id"])
+    rookie_ids = on_roster - history - set(df["player_id"])
+    if not rookie_ids:
+        return df
+
+    adp = resolve_adp(season, cfg).dropna(subset=["player_id"])
+    rookie_adp = adp[adp.player_id.isin(rookie_ids)]
+    if rookie_adp.empty:
+        return df
+
+    curve_all = adp.merge(df[["player_id", "proj_points"]], on="player_id", how="inner")
+    players = _players().set_index("player_id")
+
+    rows = []
+    for _, r in rookie_adp.iterrows():
+        pid, pos = r["player_id"], r["position"]
+        curve = curve_all[curve_all.position == pos].sort_values("adp")
+        if len(curve) < 2:
+            continue  # not enough same-position, ADP-resolved players to interpolate against
+        xp, fp = curve["adp"].to_numpy(), curve["proj_points"].to_numpy()
+        proj_points = float(np.interp(r["adp"], xp, fp))
+        meta = players.loc[pid] if pid in players.index else None
+        name = meta["name"] if meta is not None else pid
+        team = norm_team(meta["team"]) if meta is not None else None
+        rows.append({
+            "player_id": pid, "name": name, "position": pos, "team": team,
+            "proj_points": round(proj_points, 1),
+            "proj_ppg": round(proj_points / FULL_SLATE, 2),
+            # Wide, fixed band -- there is no game-log variance to measure for a
+            # rookie, so this cannot use the season_sigma calc above.
+            "floor": round(proj_points * 0.6, 1),
+            "ceiling": round(proj_points * 1.4, 1),
+            "components": {"rookie_adp_based": True, "adp": float(r["adp"])},
+        })
+    if not rows:
+        return df
+    return pd.concat([df, pd.DataFrame(rows)], ignore_index=True)
+
+
 def project_season(season: int, store: bool = False, cfg: dict | None = None) -> pd.DataFrame:
     """Full-season projections (scored per ``cfg``'s league) for every offensive
     player with history, plus anchored K/DST models. Columns: player_id, name,
@@ -420,6 +493,7 @@ def project_season(season: int, store: bool = False, cfg: dict | None = None) ->
     kdst = _project_k_dst_season(season, cfg)
     if not kdst.empty:
         df = pd.concat([df, kdst], ignore_index=True)
+    df = _inject_adp_rookies(df, season, cfg)
     df = df.sort_values("proj_points", ascending=False).reset_index(drop=True)
     if store:
         _store(df, scope="season", season=season, week=0)

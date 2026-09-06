@@ -289,3 +289,113 @@ def test_season_projection_is_sane():
     assert (df.floor >= 0).all()
     # every fantasy-relevant position is represented
     assert {"QB", "RB", "WR", "TE", "K", "DST"} <= set(df.position)
+
+
+# ---------------------------------------------------------------------------
+# _inject_adp_rookies: a rookie has zero weekly_stats rows and would otherwise
+# be silently absent from the board (gridiron-gm-modeling-gaps.md item 4).
+# ---------------------------------------------------------------------------
+def _fake_read_df(query, params=None):
+    if "FROM depth_charts" in query:
+        return pd.DataFrame({"player_id": ["ROOKIE_RB", "ROOKIE_WR", "VET_RB1", "VET_RB2"]})
+    if "FROM weekly_stats" in query:
+        return pd.DataFrame({"player_id": ["VET_RB1", "VET_RB2", "VET_QB", "VET_WR1", "VET_WR2"]})
+    if "FROM players" in query:
+        return pd.DataFrame({
+            "player_id": ["ROOKIE_RB", "ROOKIE_WR"],
+            "name": ["Rookie Runner", "Rookie Wideout"],
+            "position": ["RB", "WR"],
+            "team": ["KC", "SF"],
+            "birthdate": [None, None],
+        })
+    raise AssertionError(f"unexpected query: {query!r}")
+
+
+def _fake_resolve_adp(season, cfg):
+    # A QB sits at an ADP between the rookie RB and its bracketing RBs -- if
+    # positions were pooled, the rookie RB's interpolation would be dragged
+    # toward the QB's much higher point total instead of staying on the RB
+    # curve.
+    return pd.DataFrame([
+        {"player_id": "VET_QB", "position": "QB", "adp": 12.0},
+        {"player_id": "VET_RB1", "position": "RB", "adp": 5.0},
+        {"player_id": "VET_RB2", "position": "RB", "adp": 25.0},
+        {"player_id": "ROOKIE_RB", "position": "RB", "adp": 15.0},
+        {"player_id": "VET_WR1", "position": "WR", "adp": 2.0},
+        {"player_id": "VET_WR2", "position": "WR", "adp": 8.0},
+        {"player_id": "ROOKIE_WR", "position": "WR", "adp": 4.0},
+    ])
+
+
+@pytest.fixture
+def rookie_inject_env(monkeypatch):
+    monkeypatch.setattr(proj, "read_df", _fake_read_df)
+    monkeypatch.setattr("app.models.vorp.resolve_adp", _fake_resolve_adp)
+
+
+def _base_df():
+    return pd.DataFrame([
+        {"player_id": "VET_QB", "name": "Vet QB", "position": "QB", "team": "DAL",
+         "proj_points": 300.0, "proj_ppg": 20.0, "floor": 250.0, "ceiling": 350.0,
+         "components": {}},
+        {"player_id": "VET_RB1", "name": "Vet RB1", "position": "RB", "team": "SF",
+         "proj_points": 200.0, "proj_ppg": 12.0, "floor": 160.0, "ceiling": 240.0,
+         "components": {}},
+        {"player_id": "VET_RB2", "name": "Vet RB2", "position": "RB", "team": "NYG",
+         "proj_points": 100.0, "proj_ppg": 6.0, "floor": 80.0, "ceiling": 120.0,
+         "components": {}},
+        {"player_id": "VET_WR1", "name": "Vet WR1", "position": "WR", "team": "KC",
+         "proj_points": 180.0, "proj_ppg": 11.0, "floor": 140.0, "ceiling": 220.0,
+         "components": {}},
+        {"player_id": "VET_WR2", "name": "Vet WR2", "position": "WR", "team": "MIA",
+         "proj_points": 60.0, "proj_ppg": 4.0, "floor": 40.0, "ceiling": 80.0,
+         "components": {}},
+    ])
+
+
+def test_rookie_gets_a_projection_from_its_own_position_curve(rookie_inject_env):
+    """Regression test: an earlier version built one ADP-to-points curve pooling
+    every position, so a nearby QB (much higher proj_points at a similar ADP)
+    dragged a rookie RB's estimate toward QB-scale value. Verified against real
+    league data before the fix: a 67-ADP rookie RB came out at 208.7, ahead of
+    Saquon Barkley and Breece Hall, because a 66-ADP QB was its nearest
+    neighbor on the pooled curve.
+
+    ROOKIE_RB (adp=15) sits exactly halfway between VET_RB1 (adp=5, 200pts) and
+    VET_RB2 (adp=25, 100pts) on the RB curve -> the correct linear-interpolated
+    answer is 150.0. VET_QB sits at adp=12, much closer in raw ADP terms, with
+    proj_points=300 -- if the old pooled-curve bug were still present, the
+    QB's proximity would pull the estimate up past 150, likely toward 300.
+    """
+    out = proj._inject_adp_rookies(_base_df(), season=2026, cfg={})
+    rookie = out[out.player_id == "ROOKIE_RB"].iloc[0]
+    assert rookie.proj_points == 150.0
+    assert rookie.position == "RB"
+
+
+def test_rookie_without_resolved_adp_is_not_injected(monkeypatch):
+    """A rookie who is on a current NFL roster (depth_charts) but has no ADP
+    row at all (e.g. no market interest yet) must not get an invented
+    projection -- only ROOKIE_RB should be added, not some hypothetical
+    ROOKIE_QB with zero ADP signal."""
+    monkeypatch.setattr(proj, "read_df", lambda q, p=None: (
+        pd.DataFrame({"player_id": ["ROOKIE_RB", "ROOKIE_QB_NO_ADP", "VET_RB1", "VET_RB2"]})
+        if "FROM depth_charts" in q else
+        pd.DataFrame({"player_id": ["VET_RB1", "VET_RB2", "VET_QB", "VET_WR1", "VET_WR2"]})
+        if "FROM weekly_stats" in q else
+        pd.DataFrame({"player_id": ["ROOKIE_RB", "ROOKIE_QB_NO_ADP"],
+                      "name": ["Rookie Runner", "Rookie QB"],
+                      "position": ["RB", "QB"], "team": ["KC", "NE"],
+                      "birthdate": [None, None]})
+    ))
+    monkeypatch.setattr("app.models.vorp.resolve_adp", _fake_resolve_adp)
+    out = proj._inject_adp_rookies(_base_df(), season=2026, cfg={})
+    assert "ROOKIE_QB_NO_ADP" not in set(out.player_id)
+    assert "ROOKIE_RB" in set(out.player_id)
+
+
+def test_no_rookies_leaves_the_frame_unchanged(monkeypatch):
+    monkeypatch.setattr(proj, "read_df", lambda q, p=None: pd.DataFrame({"player_id": []}))
+    df = _base_df()
+    out = proj._inject_adp_rookies(df, season=2026, cfg={})
+    pd.testing.assert_frame_equal(out.reset_index(drop=True), df.reset_index(drop=True))
