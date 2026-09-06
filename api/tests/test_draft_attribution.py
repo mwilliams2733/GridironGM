@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import pytest
 
-from app.routers.draft import _round_and_slot, _snake_pick_numbers
+import copy
+
+from app.config import league_config
+from app.routers.draft import _round_and_slot, _snake_pick_numbers, _team_rosters
 
 SIZES = (10, 11, 12)
 ROUNDS = 16
@@ -52,3 +55,25 @@ def test_odd_rounds_run_forward_and_even_rounds_reverse():
     second_round = [_round_and_slot(o, teams)[1] for o in range(11, 21)]
     assert first_round == list(range(1, 11))
     assert second_round == list(range(10, 0, -1))
+
+
+def test_team_rosters_uses_configured_names_by_draft_slot():
+    """league1 has real manager names now (config/league.yaml team_names),
+    keyed by draft slot -- not ESPN team_id, since ESPN sync isn't wired up
+    for this league (espn_league_id is still null).
+    """
+    cfg = league_config("league1")
+    state = {"picks": [], "my_slot": None}
+    rosters = _team_rosters(state, cfg)
+    names = cfg["league"]["team_names"]
+    assert [t["name"] for t in rosters] == names
+    assert rosters[7]["name"] == "Taiyou"  # slot 8
+
+
+def test_team_rosters_falls_back_to_generic_label_without_configured_names():
+    cfg = copy.deepcopy(league_config("league1"))
+    cfg["league"].pop("team_names", None)
+    state = {"picks": [], "my_slot": 3}
+    rosters = _team_rosters(state, cfg)
+    assert rosters[0]["name"] == "Team 1"
+    assert rosters[2]["name"] == "My Team"

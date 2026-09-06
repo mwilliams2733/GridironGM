@@ -101,6 +101,22 @@ leagues:
     teams: 12
     espn_league_id: null      # TODO: fill in from the ESPN league URL
     draft: { my_slot: null, rounds: 16 }
+    # Manager names by DRAFT SLOT (1..teams), not ESPN team_id -- draft slot is
+    # what _team_rosters keys teams by until espn_league_id is filled in and
+    # sync can pull real ESPN team names instead.
+    team_names:
+      - Ray
+      - Marcus
+      - Nate
+      - Shawn
+      - Paco
+      - Rogerio
+      - Dino
+      - Taiyou
+      - David
+      - Rodney
+      - James
+      - Mike
 
   - id: league2
     name: "League 2"

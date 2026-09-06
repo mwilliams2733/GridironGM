@@ -161,7 +161,7 @@ def league_config(league_id: str | None = None) -> dict:
     if entry.get("teams") is not None:
         league["teams"] = entry["teams"]
     for key in ("playoff_week_start", "sleeper_league_id", "sleeper_user_id",
-                "sleeper_draft_id", "platform"):
+                "sleeper_draft_id", "platform", "team_names"):
         if entry.get(key) is not None:
             league[key] = entry[key]
 

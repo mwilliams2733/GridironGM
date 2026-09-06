@@ -87,6 +87,10 @@ def _team_rosters(state: dict, cfg: dict) -> list[dict]:
     """
     teams = int(cfg["league"]["teams"])
     mine = _my_slot(state, cfg)
+    # Manager names, indexed by draft slot (1-based) -- configured per league in
+    # `leagues[].team_names`. A league that hasn't set this (or an ESPN league
+    # once sync fills in real team names) falls back to the generic label.
+    names = cfg["league"].get("team_names") or []
     by_slot: dict[int, list[dict]] = {s: [] for s in range(1, teams + 1)}
     for p in state["picks"]:
         slot = p.get("slot")
@@ -101,9 +105,11 @@ def _team_rosters(state: dict, cfg: dict) -> list[dict]:
             pos = p.get("position")
             if pos:
                 counts[pos] = counts.get(pos, 0) + 1
+        configured = names[slot - 1] if slot - 1 < len(names) else None
+        name = configured or (f"Team {slot}" if slot != mine else "My Team")
         out.append({
             "slot": slot,
-            "name": f"Team {slot}" if slot != mine else "My Team",
+            "name": name,
             "is_me": slot == mine,
             "picks": picks,
             "position_counts": counts,
