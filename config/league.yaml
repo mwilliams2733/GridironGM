@@ -145,8 +145,26 @@ leagues:
   - id: league3
     name: "League 3"
     teams: 12
-    espn_league_id: 146305435
+    espn_league_id: 1463054315
     draft: { my_slot: null, rounds: 16 }
+    # Manager names by DRAFT SLOT -- real ESPN team nicknames, ordered via
+    # etl.espn.team_slot_map(league3)'s real round-1 pick order (this league's
+    # draft has already completed). Two source names had stray leading/trailing
+    # whitespace on ESPN ("Danny's Darlings ", "    Kraft Mac and Deez Nutz");
+    # trimmed here for display, content otherwise unchanged.
+    team_names:
+      - Gibbs me your money
+      - Danny's Darlings
+      - Zamboni Ground Attack
+      - Skaughty By Nature
+      - Murray Up and Wait
+      - Super Lamario World
+      - Kraft Mac and Deez Nutz
+      - Black Dynamite
+      - Space Corgis
+      - Bijan Mustard
+      - Isaac's Impressive Team
+      - KissMyEndZone
 
   - id: sundt
     name: "Sundt Redraft"
