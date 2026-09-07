@@ -59,8 +59,9 @@ def test_odd_rounds_run_forward_and_even_rounds_reverse():
 
 def test_team_rosters_uses_configured_names_by_draft_slot():
     """league1 has real manager names now (config/league.yaml team_names),
-    keyed by draft slot -- not ESPN team_id, since ESPN sync isn't wired up
-    for this league (espn_league_id is still null).
+    keyed by draft slot -- not ESPN team_id. _team_rosters never reads a live
+    ESPN team name at all, so this override applies regardless of whether
+    espn_league_id is set.
     """
     cfg = league_config("league1")
     state = {"picks": [], "my_slot": None}

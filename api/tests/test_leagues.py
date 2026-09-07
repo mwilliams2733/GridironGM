@@ -45,7 +45,7 @@ def test_team_count_comes_from_the_league_entry():
 
 
 def test_scoring_and_roster_are_shared_across_espn_leagues():
-    """The four ESPN leagues share one commissioner ruleset; a Sleeper league
+    """The three ESPN leagues share one commissioner ruleset; a Sleeper league
     (different platform, different real scoring settings) legitimately
     overrides both blocks, so this only guards leagues on the same platform."""
     espn_ids = [lid for lid in league_ids() if platform_of(lid) == "espn"]

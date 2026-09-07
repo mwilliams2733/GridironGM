@@ -87,7 +87,7 @@ def test_playoff_week_start_non_integer_is_rejected():
 
 
 def test_leagues_that_omit_the_key_pass_validation():
-    """The four ESPN leagues set neither key -- validation must not start
+    """The three ESPN leagues set neither key -- validation must not start
     rejecting configs that were always legal."""
     validate_league_config(league_config("league1"), "league1")
 

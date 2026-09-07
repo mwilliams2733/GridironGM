@@ -99,11 +99,12 @@ leagues:
   - id: league1
     name: "League 1"
     teams: 12
-    espn_league_id: null      # TODO: fill in from the ESPN league URL
+    espn_league_id: 923267
     draft: { my_slot: null, rounds: 16 }
     # Manager names by DRAFT SLOT (1..teams), not ESPN team_id -- draft slot is
-    # what _team_rosters keys teams by until espn_league_id is filled in and
-    # sync can pull real ESPN team names instead.
+    # what _team_rosters keys teams by. This is a manual override: nothing
+    # in _team_rosters pulls a live team name from ESPN sync, so it applies
+    # even now that espn_league_id is filled in above.
     team_names:
       - Ray
       - Marcus
@@ -121,19 +122,13 @@ leagues:
   - id: league2
     name: "League 2"
     teams: 12
-    espn_league_id: null      # TODO
+    espn_league_id: 13288034
     draft: { my_slot: null, rounds: 16 }
 
   - id: league3
     name: "League 3"
-    teams: 10
-    espn_league_id: null      # TODO
-    draft: { my_slot: null, rounds: 16 }
-
-  - id: league4
-    name: "League 4"
-    teams: 10
-    espn_league_id: null      # TODO
+    teams: 12
+    espn_league_id: 146305435
     draft: { my_slot: null, rounds: 16 }
 
   - id: sundt

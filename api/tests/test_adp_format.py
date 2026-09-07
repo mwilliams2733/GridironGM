@@ -98,7 +98,7 @@ def test_every_mapped_format_is_a_real_ffc_endpoint_name():
 
 
 def test_the_shipped_leagues_resolve_to_their_real_formats():
-    """The four ESPN leagues are half-PPR; Sundt is full PPR."""
+    """The three ESPN leagues are half-PPR; Sundt is full PPR."""
     assert adp_format(league_config("league1")) == "half-ppr"
     assert adp_format(league_config("sundt")) == "ppr"
 

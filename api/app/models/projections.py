@@ -58,7 +58,7 @@ def last_scoring_week(cfg: dict | None = None) -> int:
     overvalues players with strong late schedules.
 
     Absent `playoff_week_start`, returns REG_SEASON_WEEKS so behaviour is
-    unchanged -- which is what keeps the four ESPN leagues identical.
+    unchanged -- which is what keeps the three ESPN leagues identical.
     """
     cfg = cfg or league_config()
     start = cfg["league"].get("playoff_week_start")
