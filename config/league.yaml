@@ -124,6 +124,23 @@ leagues:
     teams: 12
     espn_league_id: 13288034
     draft: { my_slot: null, rounds: 16 }
+    # Manager names by DRAFT SLOT -- unlike league1's team_names (hand-entered
+    # real names), these are the actual ESPN team nicknames, ordered via
+    # etl.espn.team_slot_map(league2)'s real round-1 pick order (this league's
+    # draft has already completed). Re-derive if the league resets its draft.
+    team_names:
+      - Bijan Mustard
+      - Gibbs of Gab
+      - Justin Time To Griddy
+      - Dom's Daring Team
+      - Emeka da Pizza 🤌🏼
+      - Kittle Me Softly
+      - Nightmare on Sesame Street
+      - Leeroy Judkins
+      - Jeanty might be a Burden
+      - American Convict
+      - Mock Drafting Is For Losers!
+      - C-DEEZ NUTZ
 
   - id: league3
     name: "League 3"
