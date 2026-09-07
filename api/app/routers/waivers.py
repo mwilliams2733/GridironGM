@@ -11,7 +11,7 @@ from ..etl import platform
 from ..models import projections as proj
 from ..models import vorp
 from ..models import waivers as waivers_model
-from ._common import all_players, records, resolve_roster_entry
+from ._common import all_players, records, resolve_espn_player, resolve_roster_entry
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/waivers", tags=["waivers"])

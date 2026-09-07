@@ -222,6 +222,24 @@ def test_waiver_rows_carry_team():
         assert "team" in row
 
 
+def test_free_agent_ids_resolves_a_populated_espn_cache(monkeypatch):
+    """Regression test: waivers.py called resolve_espn_player without importing
+    it. This branch (a non-empty ESPN free_agents cache) was dead in every
+    prior test run -- nothing had ever written real ESPN cache data to disk --
+    so the missing import went unnoticed until a real ESPN sync populated the
+    cache and every waiver-rankings request started 500ing with a NameError.
+    """
+    import app.routers.waivers as waivers_router
+
+    monkeypatch.setattr(waivers_router.platform, "free_agents", lambda *a, **kw: (None, None))
+    monkeypatch.setattr(waivers_router.espn_etl, "read_cache", lambda *a, **kw: {
+        "data": [{"espn_id": 12345, "name": "Some Player", "position": "WR"}],
+    })
+    monkeypatch.setattr(waivers_router, "resolve_espn_player", lambda *a, **kw: "resolved_id")
+    ids, warning = waivers_router._free_agent_ids([], 2026, None)
+    assert ids == ["resolved_id"]
+
+
 # --- FAAB (defect 5): budget - faab_used, and a None fallback, not zero ----
 
 
