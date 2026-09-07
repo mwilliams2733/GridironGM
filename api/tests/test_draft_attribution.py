@@ -58,7 +58,7 @@ def test_odd_rounds_run_forward_and_even_rounds_reverse():
 
 
 def test_team_rosters_uses_configured_names_by_draft_slot():
-    """league1 has real manager names now (config/league.yaml team_names),
+    """league1 has real ESPN nicknames now (config/league.yaml team_names),
     keyed by draft slot -- not ESPN team_id. _team_rosters never reads a live
     ESPN team name at all, so this override applies regardless of whether
     espn_league_id is set.
@@ -68,7 +68,7 @@ def test_team_rosters_uses_configured_names_by_draft_slot():
     rosters = _team_rosters(state, cfg)
     names = cfg["league"]["team_names"]
     assert [t["name"] for t in rosters] == names
-    assert rosters[7]["name"] == "Taiyou"  # slot 8
+    assert rosters[7]["name"] == "All Roads Lead to Rome"  # slot 8
 
 
 def test_team_rosters_falls_back_to_generic_label_without_configured_names():

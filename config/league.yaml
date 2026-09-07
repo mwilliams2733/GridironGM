@@ -101,23 +101,26 @@ leagues:
     teams: 12
     espn_league_id: 923267
     draft: { my_slot: null, rounds: 16 }
-    # Manager names by DRAFT SLOT (1..teams), not ESPN team_id -- draft slot is
-    # what _team_rosters keys teams by. This is a manual override: nothing
-    # in _team_rosters pulls a live team name from ESPN sync, so it applies
-    # even now that espn_league_id is filled in above.
+    # Manager names by DRAFT SLOT -- real ESPN team nicknames, ordered via
+    # etl.espn.team_slot_map(league1)'s real round-1 pick order (this league's
+    # draft has already completed). Replaces an earlier hand-entered list of
+    # real manager names (Ray, Marcus, Nate...); the user asked to switch to
+    # the ESPN nicknames instead, matching league2/league3. "Billionaire  Boys
+    # Club" has a genuine double space on ESPN's side -- left as-is, unlike
+    # the leading/trailing whitespace trimmed for league3's names.
     team_names:
-      - Ray
-      - Marcus
-      - Nate
-      - Shawn
-      - Paco
-      - Rogerio
-      - Dino
-      - Taiyou
-      - David
-      - Rodney
-      - James
-      - Mike
+      - I Don't Give 1 Iota
+      - Its okay You tried
+      - Puttin yall on a Tee
+      - Injured Reserve
+      - Lil Chubb
+      - David's Daring Team
+      - Tu Chorizo Favorito
+      - All Roads Lead to Rome
+      - Billionaire  Boys Club
+      - Diggs my Johnston
+      - Little Willy 🥴
+      - Dallas Patriots
 
   - id: league2
     name: "League 2"
